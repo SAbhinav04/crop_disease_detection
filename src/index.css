@@ -1,0 +1,41 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #2c3e50;
+  background: #fafaf8;
+  font-family: 'Inter', 'Noto Sans Kannada', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(250, 250, 248, 0.94), rgba(250, 250, 248, 1)),
+    radial-gradient(circle at top, rgba(255, 215, 0, 0.12), transparent 25%),
+    radial-gradient(circle at bottom right, rgba(231, 76, 60, 0.1), transparent 20%);
+  color: #2c3e50;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(255, 165, 0, 0.25);
+}

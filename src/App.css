@@ -1,0 +1,51 @@
+.app-root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  position: relative;
+}
+
+.app-shell::before,
+.app-shell::after {
+  content: '';
+  position: fixed;
+  inset: auto;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: 9999px;
+  filter: blur(80px);
+  opacity: 0.55;
+}
+
+.app-shell::before {
+  top: 6rem;
+  left: -4rem;
+  width: 14rem;
+  height: 14rem;
+  background: rgba(255, 215, 0, 0.16);
+}
+
+.app-shell::after {
+  right: -3rem;
+  bottom: 2rem;
+  width: 16rem;
+  height: 16rem;
+  background: rgba(231, 76, 60, 0.12);
+}
+
+@keyframes resultFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.result-reveal {
+  animation: resultFadeIn 240ms ease-out;
+}
