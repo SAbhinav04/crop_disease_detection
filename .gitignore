@@ -5,3 +5,12 @@ build
 .env
 .env.*
 .DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Large dataset and generated artifacts
+data/
+*.zip
+*.pt
