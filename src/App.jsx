@@ -7,6 +7,7 @@ import ResultsSection from './components/ResultsSection';
 import AIAdviceSection from './components/AIAdviceSection';
 import DiseaseHistory from './components/DiseaseHistory';
 import AudioPlayer from './components/AudioPlayer';
+import ResultCard from './components/ResultCard';
 import { useApi } from './hooks/useApi';
 import { uiText } from './utils/i18n';
 
@@ -37,6 +38,13 @@ export default function App() {
   const [historyError, setHistoryError] = useState(null);
 
   const labels = uiText[language];
+  const mockResult = {
+    disease: 'Apple_Black_rot',
+    confidence: 92,
+    severity: 'Moderate',
+    crop: 'Apple'
+  };
+  const resultCardData = prediction || mockResult;
 
   useEffect(() => {
     return () => {
@@ -179,6 +187,7 @@ export default function App() {
         header={<Header language={language} onToggleLanguage={handleLanguageToggle} labels={labels} />}
         left={
           <>
+            <ResultCard result={resultCardData} />
             <UploadSection
               language={language}
               labels={labels}

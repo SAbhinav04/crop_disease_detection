@@ -2,6 +2,25 @@
 
 A responsive React + Vite frontend for crop disease detection. It supports English/Kannada UI toggling, image upload, disease prediction, AI-generated remedies, Kannada text-to-speech playback, and prediction history with a confidence trend chart.
 
+## PoC Implementation Log
+
+For a detailed log of all PoC changes implemented on 10 April 2026, see:
+
+- [POC_CHANGES_README.md](POC_CHANGES_README.md)
+
+## New Mock Result Card
+
+- Added a Tailwind-only `ResultCard` component for static UI prototyping.
+- It currently renders mock data in the app (no API call required).
+- The card includes:
+  - bold disease name
+  - confidence bar (0-100%)
+  - severity badge with fixed colors:
+    - Early: `#FFD700`
+    - Moderate: `#FFA500`
+    - Severe: `#E74C3C`
+  - crop type
+
 ## Highlights
 
 - Mobile-first layout that adapts to desktop
@@ -97,6 +116,7 @@ src/
 │   ├── AIAdviceSection.jsx
 │   ├── DiseaseHistory.jsx
 │   ├── AudioPlayer.jsx
+│   ├── ResultCard.jsx
 │   └── ResponsiveLayout.jsx
 ├── hooks/
 │   ├── useApi.js
@@ -112,6 +132,16 @@ src/
 ```
 
 ## UI Behavior
+
+### Mock Result Card
+
+- A mock result card is displayed in the left panel via `ResultCard`.
+- Current mock payload in `App.jsx`:
+  - `disease: Apple_Black_rot`
+  - `confidence: 92`
+  - `severity: Moderate`
+  - `crop: Apple`
+- Designed to be mobile responsive with Tailwind utility classes.
 
 ### Upload
 
