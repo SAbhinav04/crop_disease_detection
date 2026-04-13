@@ -1,10 +1,10 @@
 PoC 1 Baseline Evaluation (Pretrained ResNet50, no training)
 Dataset path: /Users/abhinav/crop_disease_detetction/data/karnataka_curated/dataset/test
-Samples evaluated: 256
+Samples evaluated: 3000
 Batch size: 64
 Device: mps
 Metric: crop-level top-1 accuracy proxy (ImageNet label -> crop mapping)
-Correct predictions: 2
-Unknown crop predictions: 254
-Accuracy: 0.78%
-Elapsed time: 14.56 sec
+Correct predictions: 76
+Unknown crop predictions: 2924
+Accuracy: 2.53%
+Elapsed time: 37.31 sec
