@@ -30,6 +30,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from PIL import Image
 
+import enhanced_data_pipeline as edp
+
 
 RANDOM_SEED = 42
 TRAIN_RATIO = 0.7
@@ -87,9 +89,11 @@ def ensure_dirs(root: Path) -> Dict[str, Path]:
     paths = {
         "curated_root": curated_root,
         "curated_original": curated_root / "original",
+        "curated_cleaned": curated_root / "cleaned",
         "dataset_dir": curated_root / "dataset",
         "train_dir": curated_root / "dataset" / "train",
         "test_dir": curated_root / "dataset" / "test",
+        "metadata_csv": curated_root / "dataset_metadata.csv",
         "report_file": curated_root / "validation_report.json",
         "summary_file": curated_root / "curation_summary.json",
         "viz_dir": curated_root / "validation_visualizations",
