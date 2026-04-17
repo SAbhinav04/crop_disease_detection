@@ -139,7 +139,8 @@ export default function App() {
 
   const buildSpeechText = useMemo(() => {
     if (!remedy) return '';
-    const block = remedy[language] || remedy.english || remedy.kannada;
+    const remedyKey = language === 'kn' ? 'kannada' : 'english';
+    const block = remedy[remedyKey] || remedy.english || remedy.kannada;
     if (!block) return prediction?.disease || '';
 
     const parts = [

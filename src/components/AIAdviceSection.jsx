@@ -42,7 +42,8 @@ const renderValue = (value) => {
  */
 export default function AIAdviceSection({ remedy, language, isOpen, onToggle, onSwitchLanguage }) {
   const activeLanguage = language === 'kn' ? 'kn' : 'en';
-  const block = remedy?.[activeLanguage] || remedy?.english || remedy?.kannada || null;
+  const remedyKey = activeLanguage === 'kn' ? 'kannada' : 'english';
+  const block = remedy?.[remedyKey] || remedy?.english || remedy?.kannada || null;
   const labels = adviceLabels[activeLanguage];
   const ui = activeLanguage === 'kn'
     ? {

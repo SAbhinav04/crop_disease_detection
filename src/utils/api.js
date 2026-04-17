@@ -1,6 +1,9 @@
 const getApiBaseUrl = () => {
   const value = import.meta.env.VITE_API_URL;
-  return value ? value.replace(/\/$/, '') : '';
+  if (value) return value.replace(/\/$/, '');
+
+  // Dev fallback so API calls do not hit the Vite server when .env is missing.
+  return 'http://localhost:8000';
 };
 
 const buildUrl = (path) => `${getApiBaseUrl()}${path}`;
