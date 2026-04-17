@@ -11,6 +11,7 @@ tqdm>=4.66.0
 # Image processing
 Pillow>=10.2.0
 opencv-python>=4.9.0.80
+# OpenCV is imported as cv2 in Python code. Install package name is opencv-python, not cv2.
 
 # Visualization and analysis
 matplotlib>=3.8.0

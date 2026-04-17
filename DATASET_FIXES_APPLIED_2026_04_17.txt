@@ -1,0 +1,85 @@
+Dataset Fixes Applied - 2026-04-17
+
+Project: crop_disease_detetction
+File changed: validate_karnataka_datasets.py
+Status: Implemented
+
+Summary
+- Additional hardening was implemented after initial leakage/imbalance review.
+- Goal was to make leakage checks more realistic and enforceable while preserving the existing curation flow.
+- Final outcome: strict leakage gates pass and dataset is marked training-ready.
+- Final validated state: exact leakage = 0, near-duplicate leakage = 0, ready_for_training = True.
+
+Changes Implemented
+
+1) Enforced cleaned-data split (already added in earlier round)
+- Split now runs only after clean_dataset stage.
+- Train/test is built from data/karnataka_curated/cleaned, not directly from raw curated originals.
+
+2) Exact leakage gate (already added in earlier round)
+- --fail-on-leakage option fails the run when cross-split exact duplicates are detected.
+
+3) Near-duplicate detection made stricter and less noisy (NEW in this round)
+- Added scope-aware matching via --near-dup-scope with values:
+  - class (default)
+  - crop
+  - global
+- Near-duplicate search now groups by scope + hash prefix before comparisons.
+- For each train image, only the best matching test image is counted.
+- This avoids inflated pair counts from many-to-many comparisons.
+
+4) Near-duplicate fail gate added (NEW in this round)
+- Added --fail-on-near-dup.
+- Added --near-dup-max-matches (default 0).
+- Run can now fail if near-duplicate matches exceed allowed threshold.
+
+5) Reporting improvements (NEW in this round)
+- validation_report.json now includes near_duplicate.scope.
+- Report metric key uses cross_split_near_duplicate_matches (more meaningful than raw pair explosion).
+- Console summary now prints near-duplicate matches count.
+
+6) Plot warnings cleaned up (NEW in this round)
+- Updated seaborn barplot calls to include hue + legend=False.
+- Removes deprecation warnings during visualization generation.
+
+7) Pre-split perceptual cleanup + near-duplicate-aware split (NEW in final round)
+- Added pre-split near-duplicate removal stage in cleaned data using aHash prefix bucket strategy.
+- Added ready_for_split dataset stage before train/test split.
+- Split now assigns perceptual groups as a unit to avoid cross-split near-duplicate leakage.
+- Added generated training artifacts:
+  - class_weights.json
+  - dataset_metadata.csv
+  - training_readiness.json
+
+8) Final validation result
+- Total images after cleanup: 40928
+- Total classes: 23
+- Train/Test: 28784 / 12144 (70.33% / 29.67%)
+- Corrupted images: 0
+- Cross-split duplicate groups: 0
+- Cross-split near-duplicate matches: 0
+- Pre-split near-duplicate removals: 51134
+- Ready for training: True
+
+Current Commands to Use
+
+A) Exact leakage gate only:
+/Users/abhinav/crop_disease_detetction/.venv/bin/python validate_karnataka_datasets.py --source-dirs data/raw/dataset1_plantvillage --fail-on-leakage
+
+B) Exact + near-duplicate strict gate:
+/Users/abhinav/crop_disease_detetction/.venv/bin/python validate_karnataka_datasets.py --source-dirs data/raw/dataset1_plantvillage --fail-on-leakage --fail-on-near-dup --near-dup-scope class --near-dup-max-matches 0
+
+Latest Strict Run Result (after final fixes)
+- Total images: 40928
+- Total classes: 23
+- Train/Test: 28784 / 12144 (70.33% / 29.67%)
+- Corrupted images: 0
+- Cross-split duplicate groups: 0
+- Cross-split near-duplicate matches: 0
+- Pre-split near-duplicate removals: 51134
+- Ready for training: True
+
+Notes
+- Class imbalance remains a dataset characteristic; current code reports it as severe.
+- class_weights.json is generated for training-side mitigation.
+- Training-side mitigation (weighted sampling/class weights and minority-targeted augmentation) should be applied in model training code.
