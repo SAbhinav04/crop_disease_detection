@@ -1,0 +1,72 @@
+Crop Disease Detection - Data Gaps and Planned Fixes
+Date: 2026-04-17
+Status: Review only (no pipeline code changes yet)
+
+1) Gap: Train/Test leakage from duplicate images
+- Evidence: validation_report.json shows cross-split duplicate groups.
+- Planned fix:
+  - Run global deduplication before splitting (SHA256 hash).
+  - Add near-duplicate detection (perceptual hash) as leakage guard.
+  - Fail validation if cross-split duplicates > 0.
+
+2) Gap: Enhanced cleaning pipeline is not enforced in main validation flow
+- Evidence: validate_karnataka_datasets.py imports enhanced_data_pipeline but split flow does not require cleaned output.
+- Planned fix:
+  - Integrate clean_dataset in validate_karnataka_datasets.py before split.
+  - Split only from curated_cleaned folder.
+
+3) Gap: Severe class imbalance across disease classes
+- Evidence: imbalance ratio in validation report is high.
+- Planned fix:
+  - Add imbalance thresholds in validation report.
+  - Use weighted sampling/class weights during training.
+  - Add targeted augmentation only for minority classes.
+
+4) Gap: No validation split (only train/test)
+- Evidence: current policy is 70/30 train-test.
+- Planned fix:
+  - Move to train/val/test split (example: 70/15/15).
+  - Keep test untouched for final model evaluation.
+
+5) Gap: Label naming inconsistency across sources
+- Evidence: raw class names contain punctuation/format variations.
+- Planned fix:
+  - Introduce canonical label mapping table.
+  - Store source_label and canonical_label in metadata.
+
+6) Gap: Image quality checks are minimal
+- Evidence: current checks focus on corruption and min resolution.
+- Planned fix:
+  - Add blur, exposure, and leaf-area heuristics.
+  - Report quality-fail counts by class.
+
+7) Gap: Weak dataset provenance/reproducibility
+- Evidence: no run-level manifest with file-level lineage.
+- Planned fix:
+  - Generate dataset manifest per run with source path, hash, split, timestamp, pipeline version.
+
+8) Gap: Limited domain diversity (mainly PlantVillage-style)
+- Evidence: currently curated from limited available source set.
+- Planned fix:
+  - Add field-condition datasets (lighting, clutter, occlusions).
+  - Track source distribution in report and ensure minimum share from field-like data.
+
+9) Gap: Disk-based augmentation inflates storage and can introduce static artifacts
+- Evidence: augmentation writes _aug files to disk.
+- Planned fix:
+  - Prefer on-the-fly augmentation in training dataloader.
+  - Keep offline augmentation only for specific low-data classes if needed.
+
+10) Gap: Data validation tests are not strict enough for production gating
+- Evidence: current tests are mostly sanity checks.
+- Planned fix:
+  - Add CI data gates:
+    - zero cross-split duplicates
+    - class-count minimums
+    - split-ratio tolerance checks
+    - metadata completeness checks
+
+Implementation order after review:
+Phase 1 (highest impact): Items 1, 2, 3
+Phase 2: Items 4, 5, 6
+Phase 3: Items 7, 8, 9, 10
