@@ -43,5 +43,8 @@ npm run dev
 ```bash
 npm run build
 ```
+## Fine-tune model
+Download model from: https://drive.google.com/file/d/1uAe_Oa3mAMTQMmD2r1g4c4N7WTo3g_fd/view?usp=drive_link 
+Place it in: poc/best_model.pth
 
 Build succeeds with the current implementation.
