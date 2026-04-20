@@ -5,10 +5,11 @@ import { useEffect, useRef, useState } from 'react';
  *   src: string | null,
  *   loading: boolean,
  *   language: 'en' | 'kn',
- *   labels: Record<string, string>
+ *   labels: Record<string, string>,
+ *   playNonce?: number
  * }} props
  */
-export default function AudioPlayer({ src, loading, language, labels }) {
+export default function AudioPlayer({ src, loading, language, labels, playNonce = 0 }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
 
@@ -27,6 +28,19 @@ export default function AudioPlayer({ src, loading, language, labels }) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!audioRef.current || !src) return;
+    const tryAutoPlay = async () => {
+      try {
+        await audioRef.current.play();
+        setPlaying(true);
+      } catch {
+        setPlaying(false);
+      }
+    };
+    tryAutoPlay();
+  }, [src, playNonce]);
 
   const togglePlayback = async () => {
     if (!audioRef.current || !src) return;
@@ -73,17 +87,17 @@ export default function AudioPlayer({ src, loading, language, labels }) {
           {src ? (playing ? labels.playing : labels.readyToPlay) : labels.requestAudio}
         </p>
         {src ? (
-          <div className="mt-4 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-borderSoft">
-            <audio
-              ref={audioRef}
-              src={src || undefined}
-              controls
-              onEnded={() => setPlaying(false)}
-              onPause={() => setPlaying(false)}
-              onPlay={() => setPlaying(true)}
-              className="w-full"
-            />
-          </div>
+          <audio
+            ref={audioRef}
+            src={src || undefined}
+            disableRemotePlayback
+            playsInline
+            preload="metadata"
+            onEnded={() => setPlaying(false)}
+            onPause={() => setPlaying(false)}
+            onPlay={() => setPlaying(true)}
+            className="hidden"
+          />
         ) : null}
       </div>
     </section>

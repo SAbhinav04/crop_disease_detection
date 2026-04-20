@@ -19,14 +19,17 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import struct
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+import requests
 import torch
 import torch.nn as nn
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
@@ -44,9 +47,20 @@ _POC_DIR        = _HERE.parent / "poc"                     # poc/
 _MODEL_PATH     = _POC_DIR / "best_model.pth"
 _CLASSES_PATH   = _POC_DIR / "class_names.json"
 
+# Load env from repo root and poc_api so secrets can be set in either place.
+load_dotenv(_HERE.parent / ".env")
+load_dotenv(_HERE / ".env")
+
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 IMAGE_SIZE    = 224
+
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
+SARVAM_TTS_URL = os.getenv("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech/stream").strip()
+SARVAM_TTS_VOICE = os.getenv("SARVAM_TTS_VOICE", "anushka").strip()
+SARVAM_TTS_MODEL = os.getenv("SARVAM_TTS_MODEL", "bulbul:v3").strip()
+SARVAM_TTS_SAMPLE_RATE = int(os.getenv("SARVAM_TTS_SAMPLE_RATE", "22050"))
+SARVAM_TIMEOUT_SECONDS = float(os.getenv("SARVAM_TIMEOUT_SECONDS", "30"))
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +513,92 @@ def _silence_wav_b64(duration: float = 1.2, sr: int = 16_000) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _map_tts_language(language: str) -> str:
+    normalized = language.strip().lower()
+    mapping = {
+        "kn": "kn-IN",
+        "kannada": "kn-IN",
+        "en": "en-IN",
+        "english": "en-IN",
+    }
+    return mapping.get(normalized, "kn-IN")
+
+
+def _extract_audio_base64(response: requests.Response) -> Tuple[str, str]:
+    content_type = (response.headers.get("content-type") or "").lower()
+
+    # Sarvam's streaming endpoint typically returns raw audio bytes.
+    if content_type.startswith("audio/"):
+        return base64.b64encode(response.content).decode("ascii"), content_type.split(";", 1)[0]
+
+    # Some deployments may still return JSON with audio already encoded.
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="TTS provider returned non-JSON/non-audio response") from exc
+
+    mime_type = payload.get("mime_type") or payload.get("mimeType") or "audio/mpeg"
+    candidates = [
+        payload.get("audio_base64"),
+        payload.get("audio"),
+        payload.get("data"),
+        payload.get("audioContent"),
+    ]
+
+    for value in candidates:
+        if isinstance(value, dict):
+            nested = value.get("base64") or value.get("audio_base64")
+            if isinstance(nested, str) and nested:
+                value = nested
+        if isinstance(value, str) and value:
+            if value.startswith("data:audio") and "," in value:
+                _, encoded = value.split(",", 1)
+                return encoded, mime_type
+            return value, mime_type
+
+    raise HTTPException(status_code=502, detail="TTS provider response did not include audio payload")
+
+
+def _generate_tts_audio(text: str, language: str) -> Tuple[str, str]:
+    if not SARVAM_API_KEY:
+        raise HTTPException(status_code=500, detail="SARVAM_API_KEY is not configured")
+
+    if not SARVAM_TTS_URL:
+        raise HTTPException(status_code=500, detail="SARVAM_TTS_URL is not configured")
+
+    language_code = _map_tts_language(language)
+    headers = {
+        "api-subscription-key": SARVAM_API_KEY,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "text": text,
+        "target_language_code": language_code,
+        "speaker": SARVAM_TTS_VOICE,
+        "model": SARVAM_TTS_MODEL,
+        "pace": 1.0,
+        "speech_sample_rate": SARVAM_TTS_SAMPLE_RATE,
+        "output_audio_codec": "mp3",
+        "enable_preprocessing": True,
+    }
+
+    response = requests.post(
+        SARVAM_TTS_URL,
+        headers=headers,
+        json=payload,
+        stream=True,
+        timeout=SARVAM_TIMEOUT_SECONDS,
+    )
+    if response.ok:
+        return _extract_audio_base64(response)
+
+    try:
+        detail = response.json()
+    except ValueError:
+        detail = response.text
+    raise HTTPException(status_code=502, detail=f"TTS provider error: {str(detail)[:240]}")
+
+
 # ---------------------------------------------------------------------------
 # API routes
 # ---------------------------------------------------------------------------
@@ -605,4 +705,5 @@ def remedy_llm(
 def tts(payload: TtsRequest) -> Dict[str, str]:
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="Text is required")
-    return {"audio_base64": _silence_wav_b64(), "mime_type": "audio/wav"}
+    audio_base64, mime_type = _generate_tts_audio(payload.text, payload.language)
+    return {"audio_base64": audio_base64, "mime_type": mime_type}

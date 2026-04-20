@@ -35,6 +35,7 @@ export default function App() {
   const [loadingAudio, setLoadingAudio] = useState(false);
   const [adviceOpen, setAdviceOpen] = useState(false);
   const [audioSrc, setAudioSrc] = useState(null);
+  const [audioPlayNonce, setAudioPlayNonce] = useState(0);
   const [historyError, setHistoryError] = useState(null);
 
   const labels = uiText[language];
@@ -156,7 +157,10 @@ export default function App() {
   }, [language, prediction, remedy]);
 
   const handleRequestAudio = async () => {
-    if (!buildSpeechText) return;
+    if (!buildSpeechText) {
+      setError(labels.requestAudio);
+      return;
+    }
 
     setLoadingAudio(true);
     setError(null);
@@ -168,6 +172,7 @@ export default function App() {
         if (current) URL.revokeObjectURL(current);
         return nextAudioUrl;
       });
+      setAudioPlayNonce((value) => value + 1);
     } catch (caughtError) {
       setError(normalizeErrorMessage(caughtError, labels.errorGeneric));
     } finally {
@@ -208,7 +213,13 @@ export default function App() {
               onToggle={() => setAdviceOpen((current) => !current)}
               onSwitchLanguage={setLanguage}
             />
-            <AudioPlayer src={audioSrc} loading={loadingAudio} language={language} labels={labels} />
+            <AudioPlayer
+              src={audioSrc}
+              loading={loadingAudio}
+              language={language}
+              labels={labels}
+              playNonce={audioPlayNonce}
+            />
           </>
         }
         right={
