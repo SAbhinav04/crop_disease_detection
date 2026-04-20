@@ -24,7 +24,9 @@ export default function ResultsSection({
   if (!prediction) return null;
 
   const severityInfo = getSeverityInfo(prediction.severity);
-  const confidence = Number(prediction.confidence || 0);
+  const confidence = (Number(prediction.confidence || 0) <= 1
+    ? Number(prediction.confidence || 0) * 100
+    : Number(prediction.confidence || 0));
   const severityBadgeLabel = `${severityInfo.icon} ${severityInfo.label.toUpperCase()}`;
 
   const buildSummary = () => {

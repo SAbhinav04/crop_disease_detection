@@ -45,7 +45,7 @@ const normalizeHistory = (history) =>
 
       return {
         disease: entry.disease || entry.disease_name || entry.name || 'Unknown',
-        confidence: Number(entry.confidence ?? entry.confidence_score ?? 0),
+        confidence: Number(entry.confidence ?? entry.confidence_score ?? 0) * 100,
         severity: entry.severity || 'Unknown',
         crop: entry.crop || entry.crop_name || 'Unknown',
         timestamp,
