@@ -213,6 +213,17 @@ export default function App() {
               onToggle={() => setAdviceOpen((current) => !current)}
               onSwitchLanguage={setLanguage}
             />
+          </>
+        }
+        right={
+          <>
+            <DiseaseHistory
+              history={history}
+              loading={loadingHistory}
+              error={historyError}
+              labels={labels}
+              onRefresh={loadHistory}
+            />
             <AudioPlayer
               src={audioSrc}
               loading={loadingAudio}
@@ -221,15 +232,6 @@ export default function App() {
               playNonce={audioPlayNonce}
             />
           </>
-        }
-        right={
-          <DiseaseHistory
-            history={history}
-            loading={loadingHistory}
-            error={historyError}
-            labels={labels}
-            onRefresh={loadHistory}
-          />
         }
       />
     </div>

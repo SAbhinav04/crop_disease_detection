@@ -60,7 +60,7 @@ export default function AudioPlayer({ src, loading, language, labels, playNonce 
   };
 
   return (
-    <section className="rounded-[28px] border border-borderSoft bg-white/95 p-5 shadow-soft backdrop-blur sm:p-7">
+    <section className="rounded-[28px] border border-borderSoft bg-white/65 p-5 shadow-soft backdrop-blur sm:p-7">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-textSecondary/70">04</p>
@@ -81,7 +81,7 @@ export default function AudioPlayer({ src, loading, language, labels, playNonce 
           disabled={!src || loading}
           className="inline-flex min-h-11 w-full items-center justify-center rounded-full bg-textPrimary px-4 py-3 text-sm font-semibold text-white transition-all duration-200 hover:-translate-y-0.5 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {playing ? `✓ ${labels.playing}` : `🔊 ${labels.hearKannada}`}
+          {playing ? `✓ ${labels.playing}` : `🔊 ${labels.playKannada || 'Play in Kannada'}`}
         </button>
         <p className="mt-3 text-center text-sm text-textSecondary">
           {src ? (playing ? labels.playing : labels.readyToPlay) : labels.requestAudio}

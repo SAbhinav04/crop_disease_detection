@@ -77,7 +77,7 @@ export default function ResultsSection({
   };
 
   return (
-    <section className="result-reveal rounded-[28px] border border-borderSoft bg-white/95 p-5 shadow-soft backdrop-blur sm:p-7">
+    <section className="result-reveal rounded-[28px] border border-borderSoft bg-white/65 p-5 shadow-soft backdrop-blur sm:p-7">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-textSecondary/70">02</p>

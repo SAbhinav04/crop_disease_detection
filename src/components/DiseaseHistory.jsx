@@ -74,7 +74,7 @@ export default function DiseaseHistory({ history, loading, error, onRefresh, lab
   const recentPredictions = [...normalizedHistory].slice(-5).reverse();
 
   return (
-    <section className="rounded-[28px] border border-borderSoft bg-white/95 p-5 shadow-soft backdrop-blur sm:p-7">
+    <section className="rounded-[28px] border border-borderSoft bg-white/65 p-5 shadow-soft backdrop-blur sm:p-7">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-textSecondary/70">05</p>
@@ -84,15 +84,17 @@ export default function DiseaseHistory({ history, loading, error, onRefresh, lab
         <button
           type="button"
           onClick={onRefresh}
-          className="rounded-full border border-borderSoft bg-page px-4 py-2 text-sm font-semibold text-textPrimary transition-all duration-200 hover:border-orange-300 hover:bg-amber-50"
+          aria-label="Refresh"
+          className="rounded-full border border-borderSoft bg-page p-2 text-textPrimary transition-all duration-200 hover:border-green-300 hover:bg-green-50"
         >
           {loading ? (
-            <span className="inline-flex items-center gap-2">
+            <span className="flex h-5 w-5 items-center justify-center">
               <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
-              {labels.refresh}
             </span>
           ) : (
-            labels.refresh
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
           )}
         </button>
       </div>
@@ -101,7 +103,7 @@ export default function DiseaseHistory({ history, loading, error, onRefresh, lab
         {loading ? (
           <p className="text-sm text-textSecondary">{labels.loadingHistory}</p>
         ) : error ? (
-          <p className="text-sm text-red-600">{error}</p>
+          <p className="text-sm text-red-600">{error === 'Failed to fetch' ? (labels.errorFetch || error) : error}</p>
         ) : chartData.length ? (
           <div className="h-[220px] w-full md:h-[300px]">
             <ResponsiveContainer width="100%" height="100%">

@@ -63,7 +63,7 @@ export default function UploadSection({
   };
 
   return (
-    <section className="rounded-[28px] border border-borderSoft bg-white/95 p-5 shadow-soft backdrop-blur sm:p-7">
+    <section className="rounded-[28px] border border-borderSoft bg-white/65 p-5 shadow-soft backdrop-blur sm:p-7">
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-textSecondary/70">
@@ -75,7 +75,7 @@ export default function UploadSection({
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
-          className="hidden min-h-11 shrink-0 rounded-full bg-[#FFA500] px-4 py-2 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(255,165,0,0.28)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-[#ff9900] hover:shadow-[0_16px_30px_rgba(255,165,0,0.38)] focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 sm:inline-flex"
+          className="hidden min-h-11 shrink-0 rounded-full bg-green-500 px-4 py-2 text-sm font-semibold text-white shadow-[0_12px_24px_rgba(34,197,94,0.28)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-green-600 hover:shadow-[0_16px_30px_rgba(34,197,94,0.38)] focus:outline-none focus:ring-2 focus:ring-green-400 focus:ring-offset-2 sm:inline-flex"
         >
           {labels.analyze}
         </button>
@@ -93,8 +93,8 @@ export default function UploadSection({
           setIsDragging(true);
         }}
         onDrop={handleDrop}
-        className={`group flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed px-4 py-8 text-center transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 ${
-          isDragging ? 'border-severityModerate bg-amber-50 shadow-[0_16px_40px_rgba(255,165,0,0.16)]' : 'border-borderSoft bg-panel/70 hover:border-severityModerate hover:bg-amber-50/60 hover:shadow-[0_16px_40px_rgba(44,62,80,0.06)]'
+        className={`group flex w-full flex-col items-center justify-center rounded-[24px] border-2 border-dashed px-4 py-8 text-center transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-green-400 focus:ring-offset-2 ${
+          isDragging ? 'border-green-400 bg-green-50 shadow-[0_16px_40px_rgba(34,197,94,0.16)]' : 'border-green-300 bg-green-50/50 hover:border-green-400 hover:bg-green-50 hover:shadow-[0_16px_40px_rgba(34,197,94,0.08)]'
         }`}
       >
         {previewUrl ? (
@@ -107,8 +107,10 @@ export default function UploadSection({
           </div>
         ) : (
           <>
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-2xl shadow-sm">
-              📷
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-green-100 text-green-500 shadow-sm">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
             </div>
             <p className="mt-4 text-base font-semibold text-textPrimary">
               {isDragging ? labels.dragActive : labels.readyToUpload}
@@ -149,7 +151,7 @@ export default function UploadSection({
               {labels.analyzing}
             </span>
           ) : (
-            labels.analyze
+            labels.quickAnalyze || 'Quick Analyze'
           )}
         </button>
       </div>
