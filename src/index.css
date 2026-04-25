@@ -18,7 +18,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background-image: url('/leaf-bg.jpg');
+  background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuC1JGZgatIpJej__Oy2EjR0cVoILIjReuA1Y0X1srz-mM4K6a43BqcIH8WBQqx0tb-_9JTx4AguaCwKtosFbzTYgwwsvPjELaSPflgimN8oWXdpHJJ_XM2idIBd3IcU8Snsx5LuV9QsAz2_2XmG3f2cV0jjv9o67cgD1mdFyqs7xY7K4ORB1fsgLWWhCSGaLVYMcNCG4BU2fd0nGlI9rKcM0k2kwUbqPTYMlc56FDz_hEADkRlsNw0WHIjrswDNE213GTl8flidnxpM');
   background-size: cover;
   background-position: center;
   background-attachment: fixed;
@@ -32,7 +32,7 @@ body::before {
   inset: 0;
   z-index: -1;
   background: rgba(255, 255, 255, 0.55);
-  backdrop-filter: blur(20px);
+  backdrop-filter: blur(3px);
 }
 
 * {

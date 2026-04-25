@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
+import Login from './components/Login';
 import Header from './components/Header';
 import ResponsiveLayout from './components/ResponsiveLayout';
 import UploadSection from './components/UploadSection';
@@ -22,6 +23,7 @@ const createPreviewUrl = (file) => (file ? URL.createObjectURL(file) : '');
 
 export default function App() {
   const api = useApi();
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [language, setLanguage] = useState('en');
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
@@ -180,6 +182,18 @@ export default function App() {
     }
   };
 
+  if (!isLoggedIn) {
+    return (
+      <Login
+        initialLanguage={language}
+        onLogin={({ lang }) => {
+          setLanguage(lang);
+          setIsLoggedIn(true);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app-root app-shell">
       <ResponsiveLayout
@@ -213,6 +227,7 @@ export default function App() {
               onToggle={() => setAdviceOpen((current) => !current)}
               onSwitchLanguage={setLanguage}
             />
+            
           </>
         }
         right={
@@ -232,6 +247,7 @@ export default function App() {
               playNonce={audioPlayNonce}
             />
           </>
+          
         }
       />
     </div>
