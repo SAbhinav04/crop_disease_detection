@@ -1,4 +1,10 @@
 [
+  "BG_Anthracnose 230",
+  "BG_Healthy 220",
+  "BG_Leaf Crinckle 150",
+  "BG_Powdery Mildew 180",
+  "BG_Yellow Mosaic 220",
+  "Healthy Rice Leaf",
   "Pepper__bell___Bacterial_spot",
   "Pepper__bell___healthy",
   "Potato___Early_blight",
@@ -13,5 +19,21 @@
   "Tomato__Target_Spot",
   "Tomato__Tomato_YellowLeaf__Curl_Virus",
   "Tomato__Tomato_mosaic_virus",
-  "Tomato_healthy"
+  "Tomato_healthy",
+  "chilli_cercospora",
+  "chilli_healthy",
+  "chilli_mites_and_trips",
+  "chilli_nutritional",
+  "chilli_powdery mildew",
+  "groundnut_early_leaf_spot_1",
+  "groundnut_early_rust_1",
+  "groundnut_healthy_leaf_1",
+  "groundnut_late_leaf_spot_1",
+  "groundnut_nutrition_deficiency_1",
+  "groundnut_rust_1",
+  "rice Bacterial Leaf Blight",
+  "rice Brown Spot",
+  "rice Leaf Blast",
+  "rice Leaf scald",
+  "rice Sheath Blight"
 ]
