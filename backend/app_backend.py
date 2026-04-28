@@ -644,9 +644,7 @@ async def predict(file: UploadFile = File(...)) -> Dict[str, object]:
         crop, disease, confidence, candidates = _predict_imagenet_fallback(probs)
 
     # Build remedy inline — avoids a second round-trip from the frontend.
-    # Key format: "<Crop>_<Disease>"  e.g. "Tomato_Early Blight"
-    remedy_key = f"{crop}_{disease}"
-    remedy     = build_recommendation(remedy_key)
+    remedy = remedy_llm(disease=disease, crop=crop)
 
     response = {
         "disease":        disease,
@@ -680,9 +678,31 @@ def remedy_llm(
 ) -> Dict[str, object]:
     """Return remedy for a given disease (and optionally crop).
 
-    Preferred call: /remedy-llm?crop=Tomato&disease=Early+Blight
-    Fallback call : /remedy-llm?disease=Early+Blight  (fuzzy crop match)
+    Tries to use Gemini API if GEMINI_API_KEY is present in .env.
+    Otherwise falls back to the static dictionary.
     """
+    from dotenv import load_dotenv
+    load_dotenv(_HERE.parent / ".env", override=True)
+    
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key:
+        try:
+            from google import genai
+            from google.genai import types
+            import json
+            
+            client = genai.Client(api_key=api_key)
+            prompt = f"Provide a comprehensive, accurate, and highly detailed remedy guide for the crop '{crop}' and the disease '{disease}'. Use about 800 to 1000 characters total. Return a JSON object exactly matching this structure: {{\n  \"english\": {{\n    \"cause\": \"...\",\n    \"symptoms\": \"...\",\n    \"treatment_steps\": [\"step 1\", \"step 2\"],\n    \"prevention\": \"...\",\n    \"fertilizer_recommendation\": \"...\"\n  }},\n  \"kannada\": {{\n    \"cause\": \"... (in Kannada)\",\n    \"symptoms\": \"... (in Kannada)\",\n    \"treatment_steps\": [\"... (in Kannada)\"],\n    \"prevention\": \"... (in Kannada)\",\n    \"fertilizer_recommendation\": \"... (in Kannada)\"\n  }}\n}}"
+            gemini_model = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+            response = client.models.generate_content(
+                model=gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"Gemini API error: {e}. Falling back to static remedy.")
+
     # 1. Exact compound key lookup  (most precise)
     if crop:
         exact_key = f"{crop}_{disease}"
@@ -705,5 +725,11 @@ def remedy_llm(
 def tts(payload: TtsRequest) -> Dict[str, str]:
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="Text is required")
-    audio_base64, mime_type = _generate_tts_audio(payload.text, payload.language)
+        
+    # Truncate text for TTS to fit within API limits while keeping text on UI detailed
+    text_to_speak = payload.text
+    if len(text_to_speak) > 400:
+        text_to_speak = text_to_speak[:397].rsplit(' ', 1)[0] + "..."
+        
+    audio_base64, mime_type = _generate_tts_audio(text_to_speak, payload.language)
     return {"audio_base64": audio_base64, "mime_type": mime_type}

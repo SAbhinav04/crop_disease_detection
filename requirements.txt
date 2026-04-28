@@ -1,6 +1,6 @@
 # Core deep learning stack
-torch==2.11.0
-torchvision==0.26.0
+torch>=2.0.0
+torchvision>=0.15.0
 
 # Data handling and model utilities
 numpy>=1.26.0
@@ -18,8 +18,8 @@ matplotlib>=3.8.0
 seaborn>=0.13.0
 
 # API backend
-fastapi>=0.135.3
-uvicorn>=0.44.0
+fastapi>=0.100.0
+uvicorn>=0.20.0
 python-multipart>=0.0.24
 requests>=2.32.0
 python-dotenv>=1.0.1
@@ -29,3 +29,4 @@ python-dotenv>=1.0.1
 
 # Optional: bulk image collection (secondary data sources)
 bing-image-downloader>=1.1.2
+google-genai>=0.3.0

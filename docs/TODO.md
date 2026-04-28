@@ -18,15 +18,15 @@
   | - [x] eval_metrics(): precision, recall, f1, confusion matrix (sklearn)
 
 ## Step 3: Integration (Next)
-- [ ] Update `validate_karnataka_datasets.py` main():
-  | - Add import enhanced_data_pipeline as edp
-  | - After curation: edp.clean_dataset(source_dirs, paths['curated_cleaned'] = paths['curated_original'] / 'cleaned')
-  | - class_counts, class_weights = edp.get_class_distribution(cleaned_dir)
-  | - split_counts = edp.strict_split(cleaned_dir, paths['train_dir'], paths['test_dir'])
-  | - aug_count = edp.augment_training_set(paths['train_dir'])
-  | - metadata_df = edp.generate_metadata(paths['dataset_dir'], paths['curated_root'] / 'dataset_metadata.csv')
-  | - Extend report dict with cleaning_stats, class_weights, aug_count
-  | - Save updated report
+- [x] Update `validate_karnataka_datasets.py` main():
+  | - [x] Add import enhanced_data_pipeline as edp
+  | - [x] After curation: edp.clean_dataset(source_dirs, paths['curated_cleaned'] = paths['curated_original'] / 'cleaned')
+  | - [x] class_counts, class_weights = edp.get_class_distribution(cleaned_dir)
+  | - [x] split_counts = edp.strict_split(cleaned_dir, paths['train_dir'], paths['test_dir'])
+  | - [x] aug_count = edp.augment_training_set(paths['train_dir'])
+  | - [x] metadata_df = edp.generate_metadata(paths['dataset_dir'], paths['curated_root'] / 'dataset_metadata.csv')
+  | - [x] Extend report dict with cleaning_stats, class_weights, aug_count
+  | - [x] Save updated report
 
 ## Step 4: Testing
 - [ ] Test integration on small data
