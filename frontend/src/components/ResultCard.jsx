@@ -1,10 +1,5 @@
 import React from 'react';
-
-const severityColors = {
-  Early: '#FFD700',
-  Moderate: '#FFA500',
-  Severe: '#E74C3C'
-};
+import { getSeverityInfo } from '../utils/colors';
 
 function clampConfidence(value) {
   const num = Number(value);
@@ -15,23 +10,22 @@ function clampConfidence(value) {
 
 export default function ResultCard({ result }) {
   const confidence = clampConfidence(result?.confidence);
-  const severity = result?.severity || 'Early';
-  const badgeColor = severityColors[severity] || severityColors.Early;
+  const severityInfo = getSeverityInfo(result?.severity || confidence);
 
   return (
     <section className="w-full rounded-2xl border border-amber-200 bg-white p-4 shadow-sm sm:p-6">
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="text-xs uppercase tracking-wide text-slate-500">Detected Disease</p>
+            <p className="text-xs uppercase tracking-wide text-slate-500">Detected Condition</p>
             <h3 className="text-lg font-bold text-slate-900 sm:text-xl">{result?.disease || 'Unknown_Disease'}</h3>
           </div>
 
           <span
             className="inline-flex w-fit rounded-full px-3 py-1 text-xs font-semibold text-slate-900"
-            style={{ backgroundColor: badgeColor }}
+            style={{ backgroundColor: severityInfo.color, color: severityInfo.textColor }}
           >
-            {severity}
+            {`${severityInfo.icon} ${severityInfo.label.toUpperCase()}`}
           </span>
         </div>
 

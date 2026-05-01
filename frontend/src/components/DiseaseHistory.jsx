@@ -156,7 +156,7 @@ export default function DiseaseHistory({ history, loading, error, onRefresh, lab
         <div className="mt-3 grid gap-3">
           {recentPredictions.length ? (
             recentPredictions.map((entry) => {
-              const severityInfo = getSeverityInfo(entry.severity);
+              const severityInfo = getSeverityInfo(entry.confidence);
               const severityLabel = `${severityInfo.icon} ${severityInfo.label.toUpperCase()}`;
 
               return (

@@ -23,10 +23,10 @@ export default function ResultsSection({
 
   if (!prediction) return null;
 
-  const severityInfo = getSeverityInfo(prediction.severity);
   const confidence = (Number(prediction.confidence || 0) <= 1
     ? Number(prediction.confidence || 0) * 100
     : Number(prediction.confidence || 0));
+  const severityInfo = getSeverityInfo(confidence);
   const severityBadgeLabel = `${severityInfo.icon} ${severityInfo.label.toUpperCase()}`;
 
   const buildSummary = () => {
@@ -108,7 +108,7 @@ export default function ResultsSection({
           </div>
           <div className="h-3 overflow-hidden rounded-full bg-white ring-1 ring-inset ring-borderSoft" title={`${labels.confidenceTooltip || 'Exact confidence: '}${Math.round(confidence)}%`}>
             <div
-              className="h-full rounded-full bg-gradient-to-r from-severityMild via-severityModerate to-severitySevere transition-all duration-300"
+              className="h-full rounded-full bg-gradient-to-r from-severityLow via-severityMedium to-severityHigh transition-all duration-300"
               style={{ width: `${Math.min(Math.max(confidence, 0), 100)}%` }}
             />
           </div>

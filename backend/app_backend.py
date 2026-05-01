@@ -331,10 +331,10 @@ def _guess_from_imagenet_label(label: str) -> Tuple[str, str]:
 
 def _severity(confidence: float) -> str:
     if confidence >= 0.85:
-        return "Severe"
+        return "High"
     if confidence >= 0.60:
-        return "Moderate"
-    return "Mild"
+        return "Medium"
+    return "Low"
 
 
 # ---------------------------------------------------------------------------
@@ -796,40 +796,43 @@ async def predict(file: UploadFile = File(...)) -> Dict[str, object]:
     image = Image.open(io.BytesIO(payload)).convert("RGB")
 
     # 2. Local Inference
-    # FIX: Use TRANSFORM from your load function, and add .unsqueeze(0) for batch size
     input_tensor = TRANSFORM(image).unsqueeze(0) 
     
     with torch.inference_mode():
-        # FIX: Use uppercase DEVICE
         input_tensor = input_tensor.to(DEVICE)
         logits = MODEL(input_tensor)
         probs = torch.softmax(logits, dim=1)
         conf, class_idx = torch.max(probs, 1)
 
-    # 3. Map result to your folder structure (e.g., "Corn_Common_Rust")
+    # 3. Map result to your folder structure
     full_class_name = CLASS_NAMES[class_idx.item()]
     
     # Split "Crop_Disease" string for the UI
     parts = full_class_name.split("_", 1)
     crop = parts[0]
-    disease = parts[1] if len(parts) > 1 else "Healthy"
+    raw_disease = parts[1] if len(parts) > 1 else "Healthy"
     confidence = conf.item()
 
-    # 4. Generate Remedy
-    remedy = remedy_llm(disease=disease, crop=crop)
+    # --- THE FIX: INTERCEPT HEALTHY PLANTS ---
+    if "healthy" in raw_disease.lower():
+        disease = "Healthy"      # Cleans up weird names like "healthy_foot"
+        severity = "Low"         # Keeps the UI severity vocabulary consistent
+    else:
+        # If it's an actual disease, proceed as normal
+        disease = raw_disease
+        severity = _severity(confidence)
 
-    # 5. Build Final Response
+    # 4. Build Final Response (No remedy included)
     response = {
         "disease":        disease,
         "confidence":     round(confidence, 4),
-        "severity":       _severity(confidence),
+        "severity":       severity,
         "crop":           crop,
         "model":          "EfficientNet-V2-S (Local)",
-        "remedy":         remedy,
     }
 
-    # FIX: Replace missing _update_history with direct append logic
-    history_entry = {k: v for k, v in response.items() if k != "remedy"}
+    # 5. Update History
+    history_entry = {k: v for k, v in response.items()}
     history_entry["timestamp"] = datetime.now(timezone.utc).isoformat()
     PREDICTION_HISTORY.append(history_entry)
     if len(PREDICTION_HISTORY) > MAX_HISTORY:

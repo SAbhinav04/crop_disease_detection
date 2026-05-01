@@ -9,9 +9,9 @@ export default {
         textPrimary: '#2C3E50',
         textSecondary: '#7F8C8D',
         borderSoft: '#E8E8E8',
-        severityMild: '#FFD700',
-        severityModerate: '#FFA500',
-        severitySevere: '#E74C3C'
+        severityLow: '#FFD700',
+        severityMedium: '#FFA500',
+        severityHigh: '#E74C3C'
       },
       boxShadow: {
         soft: '0 20px 50px rgba(44, 62, 80, 0.08)'
