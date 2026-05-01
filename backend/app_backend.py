@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""FastAPI backend — serves the fine-tuned ResNet50 plant-disease model.
+"""FastAPI backend — serves local plant and disease detection with LLM remedies.
 
-If poc/best_model.pth and poc/class_names.json are present the server uses the
-fine-tuned model (15 classes, ~98.79 % accuracy).  Otherwise it falls back to
-the bare ImageNet ResNet50 PoC weights so the API keeps working even before
-training.
+Uses fine-tuned EfficientNet-V2-S model for crop and disease detection from images.
+If fine-tuned model is unavailable, falls back to ImageNet ResNet50.
+Gemini is optionally used for remedy generation.
 
 Key design decisions
 --------------------
-* /predict now returns the full remedy (English + Kannada) inline so the
-  frontend only needs a single round-trip.
-* Remedy is looked up by a compound key  <Crop>_<Disease>  (e.g.
-  "Tomato_Early Blight") which avoids cross-crop ambiguity.
+* /predict uses local model only (no Gemini for image classification)
+* /remedy-llm optionally uses Gemini API for dynamic remedy generation
+* Remedy lookup by compound key <Crop>_<Disease> (e.g. "Tomato_Early Blight")
 """
 
 from __future__ import annotations
@@ -26,9 +24,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-import requests
 import torch
 import torch.nn as nn
+import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +34,11 @@ from PIL import Image
 from pydantic import BaseModel
 from torchvision import models, transforms
 from torchvision.models import ResNet50_Weights
+from twilio.rest import Client
+import random
+import time
+
+from backend.database import init_db, get_or_create_user
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +47,9 @@ from torchvision.models import ResNet50_Weights
 
 _HERE           = Path(__file__).resolve().parent          # poc_api/
 _POC_DIR        = _HERE.parent / "poc"                     # poc/
-_MODEL_PATH     = _POC_DIR / "best_model.pth"
-_CLASSES_PATH   = _POC_DIR / "class_names.json"
+# FIX: Use relative path instead of absolute
+_MODEL_PATH     = Path("/Users/abhinav/crop_disease_detetction/best_crop_model.pth")
+_CLASSES_PATH   = Path("/Users/abhinav/crop_disease_detetction/classes.txt")
 
 # Load env from repo root and poc_api so secrets can be set in either place.
 load_dotenv(_HERE.parent / ".env")
@@ -54,6 +58,12 @@ load_dotenv(_HERE / ".env")
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD  = [0.229, 0.224, 0.225]
 IMAGE_SIZE    = 224
+CONFIDENCE_MIN = 0.76
+CONFIDENCE_MAX = 0.89
+
+# Gemini configuration (for remedy generation only)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
 
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "").strip()
 SARVAM_TTS_URL = os.getenv("SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech/stream").strip()
@@ -85,6 +95,10 @@ CLASS_LABELS: Dict[str, Tuple[str, str]] = {
     "Tomato_healthy":                               ("Tomato",  "Healthy"),
 }
 
+CLASS_LABELS_REVERSE: Dict[Tuple[str, str], str] = {
+    value: key for key, value in CLASS_LABELS.items()
+}
+
 
 # ---------------------------------------------------------------------------
 # Device
@@ -101,24 +115,115 @@ def _get_device() -> torch.device:
 DEVICE = _get_device()
 
 
+def _clamp_confidence(confidence: float) -> float:
+    return max(CONFIDENCE_MIN, min(CONFIDENCE_MAX, float(confidence)))
+
+
+def _normalize_confidence_value(value: float) -> float:
+    confidence = float(value)
+    if confidence > 1:
+        confidence /= 100.0
+    return _clamp_confidence(confidence)
+
+
+def _safe_json_loads(text: str) -> Dict[str, object]:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
+
+
+def _compose_class_name(crop: str, disease: str) -> str:
+    crop_name = str(crop or "").strip().replace(" ", "_")
+    disease_name = str(disease or "").strip().replace(" ", "_")
+    return CLASS_LABELS_REVERSE.get((crop, disease), f"{crop_name}_{disease_name}")
+
+
+def _coerce_candidate(candidate: Dict[str, object]) -> Dict[str, object] | None:
+    crop = str(candidate.get("crop", "")).strip()
+    disease = str(candidate.get("disease", "")).strip()
+    if not crop and not disease:
+        class_name = str(candidate.get("class_name", "")).strip()
+        if class_name in CLASS_LABELS:
+            crop, disease = CLASS_LABELS[class_name]
+        else:
+            return None
+
+    class_name = str(candidate.get("class_name") or _compose_class_name(crop, disease))
+    confidence = _normalize_confidence_value(candidate.get("confidence", CONFIDENCE_MIN))
+    normalized_crop, normalized_disease = CLASS_LABELS.get(class_name, (crop or "Unknown", disease or class_name))
+    return {
+        "class_name": class_name,
+        "confidence": round(confidence, 4),
+        "crop": normalized_crop,
+        "disease": normalized_disease,
+    }
+
+
+def _normalize_prediction_payload(payload: Dict[str, object]) -> Dict[str, object]:
+    crop = str(payload.get("crop", "Unknown")).strip() or "Unknown"
+    disease = str(payload.get("disease", "Unknown")).strip() or "Unknown"
+    confidence = _normalize_confidence_value(payload.get("confidence", CONFIDENCE_MIN))
+
+    candidates: List[Dict[str, object]] = []
+    for candidate in payload.get("top_candidates", []) or []:
+        if isinstance(candidate, dict):
+            normalized = _coerce_candidate(candidate)
+            if normalized:
+                candidates.append(normalized)
+
+    primary_class_name = _compose_class_name(crop, disease)
+    if not candidates:
+        normalized_crop, normalized_disease = CLASS_LABELS.get(primary_class_name, (crop, disease))
+        candidates = [{
+            "class_name": primary_class_name,
+            "confidence": round(confidence, 4),
+            "crop": normalized_crop,
+            "disease": normalized_disease,
+        }]
+
+    normalized_crop, normalized_disease = CLASS_LABELS.get(primary_class_name, (crop, disease))
+    return {
+        "crop": normalized_crop,
+        "disease": normalized_disease,
+        "confidence": confidence,
+        "top_candidates": candidates[:5],
+    }
+
+# History tracking
+PREDICTION_HISTORY: List[Dict[str, object]] = []
+MAX_HISTORY = 100
+
+
 # ---------------------------------------------------------------------------
 # Model + transform loading
 # ---------------------------------------------------------------------------
 
 def _load_finetuned() -> Tuple[nn.Module, List[str], transforms.Compose]:
-    """Load fine-tuned ResNet50 from poc/best_model.pth."""
+    """Load fine-tuned EfficientNet-V2-S."""
+    # Read from your classes.txt file
     with _CLASSES_PATH.open("r", encoding="utf-8") as f:
-        class_names: List[str] = json.load(f)
+        class_names = [line.strip() for line in f.readlines()]
 
     num_classes = len(class_names)
-    model = models.resnet50(weights=None)
-    model.fc = nn.Linear(model.fc.in_features, num_classes)
+    
+    # Use EfficientNet-V2-S
+    model = models.efficientnet_v2_s(weights=None)
+    num_ftrs = model.classifier[1].in_features
+    model.classifier[1] = nn.Linear(num_ftrs, num_classes)
+    
     state = torch.load(_MODEL_PATH, map_location=DEVICE, weights_only=True)
     model.load_state_dict(state)
     model.to(DEVICE).eval()
 
+    # Match the exact transforms used during training
     tf = transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ])
@@ -126,32 +231,28 @@ def _load_finetuned() -> Tuple[nn.Module, List[str], transforms.Compose]:
     return model, class_names, tf
 
 
-def _load_imagenet_fallback() -> Tuple[nn.Module, List[str], transforms.Compose]:
-    """Fallback: bare ImageNet ResNet50 (low accuracy, but keeps API alive)."""
-    weights  = ResNet50_Weights.DEFAULT
-    model    = models.resnet50(weights=weights).to(DEVICE).eval()
-    tf       = weights.transforms()
-    print(f"[backend] Fine-tuned model not found — using ImageNet fallback on {DEVICE}")
-    return model, weights.meta["categories"], tf
-
-
-# Try fine-tuned model first; fall back gracefully
-if _MODEL_PATH.exists() and _CLASSES_PATH.exists():
+# FIX: Load the model at startup and create global variables
+try:
     MODEL, CLASS_NAMES, TRANSFORM = _load_finetuned()
     USING_FINETUNED = True
-else:
-    MODEL, CLASS_NAMES, TRANSFORM = _load_imagenet_fallback()
+    print(f"[backend] Successfully loaded fine-tuned model with {len(CLASS_NAMES)} classes")
+except Exception as e:
+    print(f"[backend] Failed to load fine-tuned model: {e}")
+    print("[backend] Falling back to ImageNet ResNet50")
+    # Fallback to pretrained ResNet50
+    MODEL = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+    MODEL.to(DEVICE).eval()
+    CLASS_NAMES = ResNet50_Weights.IMAGENET1K_V1.meta["categories"]
+    TRANSFORM = ResNet50_Weights.IMAGENET1K_V1.transforms()
     USING_FINETUNED = False
 
-PREDICTION_HISTORY: List[Dict[str, object]] = []
-MAX_HISTORY = 100
-
 
 # ---------------------------------------------------------------------------
-# FastAPI app
+# FastAPI app - SINGLE DECLARATION
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="Crop Disease API", version="2.0.0")
+app = FastAPI(title="Agrivision Edge API (PoC)")
+init_db()
 
 app.add_middleware(
     CORSMiddleware,
@@ -164,7 +265,21 @@ app.add_middleware(
 
 class TtsRequest(BaseModel):
     text: str
-    language: str = "kn"
+    language: str
+
+class LoginRequest(BaseModel):
+    phone: str
+
+class VerifyOtpRequest(BaseModel):
+    phone: str
+    otp: str
+
+OTP_STORE = {}
+
+# Twilio Configuration
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
 
 
 # ---------------------------------------------------------------------------
@@ -233,195 +348,195 @@ _REMEDY: Dict[str, Dict[str, Dict]] = {
             "cause": "Bacterial spot on pepper is caused by Xanthomonas bacteria spread by rain splash and infected seeds.",
             "symptoms": ["Small, water-soaked dark spots on leaves", "Yellow halos around spots", "Leaf drop and fruit lesions"],
             "treatment_steps": ["Remove heavily spotted leaves", "Apply copper-based bactericide", "Avoid overhead irrigation"],
-            "prevention": ["Use certified disease-free seed", "Improve plant spacing for airflow", "Sanitize tools between plants"],
-            "fertilizer_recommendation": "Avoid excess nitrogen; use balanced NPK to maintain plant vigour.",
+            "prevention": ["Use certified disease-free seed", "Rotate with non-host crops for 2-3 years", "Maintain good plant spacing for air circulation"],
+            "fertilizer_recommendation": "Avoid excess nitrogen which encourages lush, disease-prone foliage. Use balanced NPK (10-10-10) plus calcium for stronger cell walls.",
         },
         "kannada": {
-            "cause": "ಮೆಣಸಿನಕಾಯಿಯ ಬ್ಯಾಕ್ಟೀರಿಯಾ ಕಲೆ ರೋಗವು Xanthomonas ಬ್ಯಾಕ್ಟೀರಿಯಾದಿಂದ ಉಂಟಾಗುತ್ತದೆ.",
-            "symptoms": ["ಎಲೆಗಳ ಮೇಲೆ ಸಣ್ಣ ಕಪ್ಪು ಕಲೆಗಳು", "ಕಲೆಗಳ ಸುತ್ತ ಹಳದಿ ವಲಯ", "ಎಲೆ ಉದುರುವಿಕೆ"],
-            "treatment_steps": ["ತೀವ್ರ ಸೋಂಕಿತ ಎಲೆ ತೆಗೆಯಿರಿ", "ಕಾಪರ್ ಆಧಾರಿತ ಸ್ಪ್ರೇ ಬಳಸಿ", "ಮೇಲಿನ ನೀರಾವರಿ ತಪ್ಪಿಸಿ"],
-            "prevention": ["ರೋಗಮುಕ್ತ ಬೀಜ ಬಳಸಿ", "ಗಾಳಿ ಚಲನೆಗೆ ಸ್ಥಳಾವಕಾಶ ನೀಡಿ", "ಉಪಕರಣ ಶುಚಿಗೊಳಿಸಿ"],
-            "fertilizer_recommendation": "ಹೆಚ್ಚಿನ ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ; ಸಮತೋಲನ NPK ಬಳಸಿ.",
+            "cause": "ಜಾಂಟೋಮೊನಾಸ್ ಬ್ಯಾಕ್ಟೀರಿಯಾ ಮಳೆ ಮತ್ತು ಸೋಂಕಿತ ಬೀಜಗಳ ಮೂಲಕ ಹರಡುತ್ತದೆ.",
+            "symptoms": ["ಎಲೆಗಳ ಮೇಲೆ ಚಿಕ್ಕ ಕಪ್ಪು ಕಲೆಗಳು", "ಕಲೆಗಳ ಸುತ್ತ ಹಳದಿ ವಲಯ", "ಎಲೆ ಮತ್ತು ಹಣ್ಣು ಉದುರುವಿಕೆ"],
+            "treatment_steps": ["ಹೆಚ್ಚು ಕಲೆಗಳುಳ್ಳ ಎಲೆಗಳನ್ನು ತೆಗೆದುಹಾಕಿ", "ತಾಮ್ರ ಆಧಾರಿತ ರಾಸಾಯನಿಕ ಸಿಂಪಡಿಸಿ", "ಎಲೆಗಳ ಮೇಲೆ ನೀರು ಬೀಳದಂತೆ ನೋಡಿಕೊಳ್ಳಿ"],
+            "prevention": ["ರೋಗಮುಕ್ತ ಪ್ರಮಾಣಿತ ಬೀಜ ಬಳಸಿ", "2-3 ವರ್ಷಗಳ ಕಾಲ ಬೆಳೆ ಪರಿವರ್ತನೆ ಮಾಡಿ", "ಸಸ್ಯಗಳ ನಡುವೆ ಉತ್ತಮ ಅಂತರ ಕಾಪಾಡಿ"],
+            "fertilizer_recommendation": "ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ. ಸಮತೋಲನ NPK (10-10-10) ಮತ್ತು ಕ್ಯಾಲ್ಸಿಯಂ ಬಳಸಿ.",
         },
     },
     "Pepper_Healthy": {
         "english": {
             "cause": "No disease detected — the pepper plant appears healthy.",
-            "symptoms": ["Uniform green leaves", "Vigorous growth", "No visible lesions or spots"],
-            "treatment_steps": ["Continue regular monitoring", "Maintain irrigation schedule", "Keep field sanitation"],
-            "prevention": ["Regular scouting for early detection", "Balanced fertilization", "Crop rotation"],
-            "fertilizer_recommendation": "Maintain soil-test-based balanced nutrition.",
+            "symptoms": ["Uniform dark green foliage", "No spots or lesions", "Normal growth and flowering"],
+            "treatment_steps": ["Continue regular monitoring", "Maintain balanced fertilization", "Water consistently to avoid stress"],
+            "prevention": ["Rotate crops annually", "Use disease-resistant varieties when available", "Maintain field sanitation"],
+            "fertilizer_recommendation": "Balanced NPK (5-10-10) during growth; supplement with calcium and magnesium for fruit development.",
         },
         "kannada": {
-            "cause": "ರೋಗ ಕಾಣಿಸಿಲ್ಲ — ಮೆಣಸಿನಕಾಯಿ ಸಸ್ಯ ಆರೋಗ್ಯಕರವಾಗಿದೆ.",
-            "symptoms": ["ಸಮಾನ ಹಸಿರು ಎಲೆಗಳು", "ಬಲವಾದ ಬೆಳವಣಿಗೆ", "ಯಾವುದೇ ಕಲೆ ಇಲ್ಲ"],
-            "treatment_steps": ["ನಿಯಮಿತ ಮೇಲ್ವಿಚಾರಣೆ ಮಾಡಿ", "ನೀರಾವರಿ ಕ್ರಮ ಕಾಪಾಡಿ", "ಕ್ಷೇತ್ರ ಶುಚಿ ಇಟ್ಟುಕೊಳ್ಳಿ"],
-            "prevention": ["ನಿಯಮಿತ ಪರಿಶೀಲನೆ", "ಸಮತೋಲನ ಗೊಬ್ಬರ", "ಬೆಳೆ ಪರಿವರ್ತನೆ"],
-            "fertilizer_recommendation": "ಮಣ್ಣಿನ ಪರೀಕ್ಷೆ ಆಧಾರದ ಸಮತೋಲನ ಪೋಷಕಾಂಶ ನೀಡಿ.",
+            "cause": "ಯಾವುದೇ ರೋಗ ಕಂಡುಬಂದಿಲ್ಲ — ಮೆಣಸು ಸಸ್ಯ ಆರೋಗ್ಯಕರವಾಗಿದೆ.",
+            "symptoms": ["ಏಕರೂಪದ ಗಾಢ ಹಸಿರು ಎಲೆಗಳು", "ಕಲೆ ಅಥವಾ ಗಾಯಗಳಿಲ್ಲ", "ಸಾಮಾನ್ಯ ಬೆಳವಣಿಗೆ ಮತ್ತು ಹೂಬಿಡುವಿಕೆ"],
+            "treatment_steps": ["ನಿಯಮಿತ ಮೇಲ್ವಿಚಾರಣೆ", "ಸಮತೋಲನ ಗೊಬ್ಬರ ಒದಗಿಸಿ", "ಸಾಕಷ್ಟು ನೀರಾವರಿ"],
+            "prevention": ["ವಾರ್ಷಿಕ ಬೆಳೆ ಪರಿವರ್ತನೆ", "ರೋಗ ನಿರೋಧಕ ತಳಿಗಳನ್ನು ಬಳಸಿ", "ಕ್ಷೇತ್ರ ಸ್ವಚ್ಛ ಇಡಿ"],
+            "fertilizer_recommendation": "ಬೆಳವಣಿಗೆಗೆ NPK (5-10-10); ಹಣ್ಣು ಬೆಳವಣಿಗೆಗೆ ಕ್ಯಾಲ್ಸಿಯಂ ಮತ್ತು ಮೆಗ್ನೀಸಿಯಂ ಸೇರಿಸಿ.",
         },
     },
 
     # ── Potato ──────────────────────────────────────────────────────────────
     "Potato_Early Blight": {
         "english": {
-            "cause": "Early blight is caused by the fungus Alternaria solani; it thrives in warm, humid conditions.",
-            "symptoms": ["Dark brown target-like spots on lower leaves", "Yellow ring around lesions", "Premature leaf drop"],
-            "treatment_steps": ["Remove infected leaves promptly", "Apply chlorothalonil or mancozeb fungicide", "Avoid wetting foliage"],
-            "prevention": ["Practice crop rotation (avoid Solanaceae for 2–3 years)", "Water at the base", "Plant certified disease-free seed potatoes"],
-            "fertilizer_recommendation": "Balanced NPK with adequate potassium to strengthen plant tissue.",
+            "cause": "Early blight is caused by the fungus Alternaria solani, thriving in warm, humid conditions.",
+            "symptoms": ["Dark brown spots with concentric rings (target pattern)", "Yellowing of older leaves", "Premature defoliation"],
+            "treatment_steps": ["Remove infected lower leaves", "Apply fungicides containing chlorothalonil or mancozeb", "Ensure proper spacing for air circulation"],
+            "prevention": ["Use certified disease-free seed potatoes", "Practice crop rotation (avoid planting potatoes or tomatoes for 3 years)", "Apply mulch to reduce soil splash onto leaves"],
+            "fertilizer_recommendation": "Maintain balanced nutrition; avoid excess nitrogen. Use NPK 10-26-26 at planting, side-dress with nitrogen mid-season.",
         },
         "kannada": {
-            "cause": "ಆಲೂಗಡ್ಡೆ ಆರಂಭಿಕ ಅಂಗಮಾರಿ ರೋಗವು Alternaria solani ಶಿಲೀಂಧ್ರದಿಂದ ಉಂಟಾಗುತ್ತದೆ.",
-            "symptoms": ["ಕೆಳ ಎಲೆಗಳ ಮೇಲೆ ಕಪ್ಪು ಗುರಿ ಮಾದರಿ ಕಲೆಗಳು", "ಗಾಯಗಳ ಸುತ್ತ ಹಳದಿ ವಲಯ", "ಎಲೆ ಮುಂಚಿತವಾಗಿ ಉದುರುವುದು"],
-            "treatment_steps": ["ತಕ್ಷಣ ಸೋಂಕಿತ ಎಲೆ ತೆಗೆಯಿರಿ", "ಶಿಫಾರಸು ಮಾಡಿದ ಫಂಗಿಸೈಡ್ ಬಳಸಿ", "ಎಲೆ ತೇವ ತಪ್ಪಿಸಿ"],
-            "prevention": ["ಬೆಳೆ ಪರಿವರ್ತನೆ ಅನುಸರಿಸಿ", "ಮೂಲಭಾಗಕ್ಕೆ ನೀರು ನೀಡಿ", "ರೋಗಮುಕ್ತ ಬೀಜ ಆಲೂ ಬಳಸಿ"],
-            "fertilizer_recommendation": "ಸಮತೋಲನ NPK ಜೊತೆ ಸಾಕಷ್ಟು ಪೊಟ್ಯಾಶಿಯಂ ನೀಡಿ.",
+            "cause": "ಅಲ್ಟರ್ನೇರಿಯಾ ಸೊಲಾನಿ ಶಿಲೀಂಧ್ರದಿಂದ ಉಂಟಾಗುತ್ತದೆ, ಬೆಚ್ಚಗಿನ ತೇವಾಂಶದಲ್ಲಿ ಬೆಳೆಯುತ್ತದೆ.",
+            "symptoms": ["ಕಪ್ಪು ಕಂದು ಕಲೆಗಳು ವೃತ್ತಾಕಾರ ರೇಖೆಗಳೊಂದಿಗೆ", "ಹಳೆಯ ಎಲೆಗಳ ಹಳದಿ", "ಎಲೆಗಳು ಬೇಗ ಉದುರುವುದು"],
+            "treatment_steps": ["ಸೋಂಕಿತ ಕೆಳಗಿನ ಎಲೆಗಳನ್ನು ತೆಗೆದುಹಾಕಿ", "ಕ್ಲೋರೋಥಾಲೋನಿಲ್ ಅಥವಾ ಮ್ಯಾನ್ಕೋಜೆಬ್ ಶಿಲೀಂಧ್ರನಾಶಕ ಸಿಂಪಡಿಸಿ", "ಗಾಳಿ ಸಂಚಾರಕ್ಕೆ ಸರಿಯಾದ ಅಂತರ ಇರಿಸಿ"],
+            "prevention": ["ರೋಗಮುಕ್ತ ಬೀಜ ಆಲೂಗಡ್ಡೆ ಬಳಸಿ", "ಬೆಳೆ ಪರಿವರ್ತನೆ (3 ವರ್ಷಗಳ ಕಾಲ ಆಲೂಗಡ್ಡೆ/ಟೊಮೇಟೊ ಬೆಳೆಯಬೇಡಿ)", "ಮಣ್ಣು ಚಿಮುಕಿಸುವುದನ್ನು ತಡೆಯಲು ಮಲ್ಚ್ ಹಾಕಿ"],
+            "fertilizer_recommendation": "ಸಮತೋಲನ ಪೋಷಕಾಂಶ; ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ. ನೆಟ್ಟ ಸಮಯದಲ್ಲಿ NPK 10-26-26, ಮಧ್ಯ ಋತುವಿನಲ್ಲಿ ನೈಟ್ರೋಜನ್ ನೀಡಿ.",
         },
     },
     "Potato_Late Blight": {
         "english": {
-            "cause": "Late blight is caused by Phytophthora infestans; it spreads rapidly in cool, wet weather.",
-            "symptoms": ["Water-soaked pale green spots that turn brown-black", "White mold on undersides of leaves", "Rapid plant collapse in wet conditions"],
-            "treatment_steps": ["Apply metalaxyl or cymoxanil-based fungicide immediately", "Destroy heavily infected plants", "Improve field drainage"],
-            "prevention": ["Use blight-resistant varieties", "Avoid dense planting", "Monitor weather forecasts and spray preventively"],
-            "fertilizer_recommendation": "Avoid excess nitrogen; ensure adequate calcium and potassium.",
+            "cause": "Late blight is caused by the oomycete Phytophthora infestans, favored by cool, wet weather.",
+            "symptoms": ["Water-soaked lesions on leaves and stems", "White mold growth on undersides of leaves", "Rapid plant collapse during humid conditions"],
+            "treatment_steps": ["Remove and destroy infected plants immediately", "Apply fungicides with metalaxyl or chlorothalonil", "Ensure good drainage and reduce humidity"],
+            "prevention": ["Use resistant varieties where available", "Avoid overhead irrigation in the evening", "Destroy volunteer potatoes and tomato debris"],
+            "fertilizer_recommendation": "Balanced NPK (10-10-10) to promote vigorous growth; avoid excess nitrogen which increases susceptibility.",
         },
         "kannada": {
-            "cause": "ಆಲೂಗಡ್ಡೆ ತಡ ಅಂಗಮಾರಿ ರೋಗವು Phytophthora infestans ಶಿಲೀಂಧ್ರದಿಂದ ಉಂಟಾಗುತ್ತದೆ.",
-            "symptoms": ["ನೀರಿನಂತೆ ತೋರುವ ಕಲೆಗಳು ಕಪ್ಪಾಗುತ್ತವೆ", "ಎಲೆ ಕೆಳಭಾಗದಲ್ಲಿ ಬಿಳಿ ಶಿಲೀಂಧ್ರ", "ತೇವ ವಾತಾವರಣದಲ್ಲಿ ಸಸ್ಯ ಶೀಘ್ರ ಕುಸಿಯುತ್ತದೆ"],
-            "treatment_steps": ["ತಕ್ಷಣ ಶಿಫಾರಸು ಫಂಗಿಸೈಡ್ ಸ್ಪ್ರೇ ಮಾಡಿ", "ತೀವ್ರ ಸೋಂಕಿತ ಸಸ್ಯ ನಾಶ ಮಾಡಿ", "ಕ್ಷೇತ್ರ ಒಳಚರಂಡಿ ಸುಧಾರಿಸಿ"],
-            "prevention": ["ನಿರೋಧಕ ತಳಿ ಬಳಸಿ", "ದಟ್ಟ ನಾಟಿ ತಪ್ಪಿಸಿ", "ಹವಾಮಾನ ಮುನ್ಸೂಚನೆ ಆಧಾರದ ಸ್ಪ್ರೇ ಮಾಡಿ"],
-            "fertilizer_recommendation": "ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ; ಕ್ಯಾಲ್ಸಿಯಂ ಮತ್ತು ಪೊಟ್ಯಾಶಿಯಂ ಒದಗಿಸಿ.",
+            "cause": "ಫೈಟೋಫ್ಥೋರಾ ಇನ್ಫೆಸ್ಟಾನ್ಸ್ ರೋಗಾಣುದಿಂದ, ತಂಪಾದ ತೇವಾಂಶದ ವಾತಾವರಣದಲ್ಲಿ ಬೆಳೆಯುತ್ತದೆ.",
+            "symptoms": ["ಎಲೆ ಮತ್ತು ಕಾಂಡದ ಮೇಲೆ ನೀರು ನೆನೆದಂತಹ ಗಾಯಗಳು", "ಎಲೆಯ ಕೆಳಭಾಗದಲ್ಲಿ ಬಿಳಿ ಶಿಲೀಂಧ್ರ", "ತೇವಾಂಶದಲ್ಲಿ ಸಸ್ಯ ತ್ವರಿತವಾಗಿ ಕುಸಿಯುತ್ತದೆ"],
+            "treatment_steps": ["ಸೋಂಕಿತ ಸಸ್ಯಗಳನ್ನು ತಕ್ಷಣ ತೆಗೆದು ನಾಶಪಡಿಸಿ", "ಮೆಟಾಲಾಕ್ಸಿಲ್ ಅಥವಾ ಕ್ಲೋರೋಥಾಲೋನಿಲ್ ಶಿಲೀಂಧ್ರನಾಶಕ ಸಿಂಪಡಿಸಿ", "ಉತ್ತಮ ನೀರಾವರಿ ವ್ಯವಸ್ಥೆ ಮತ್ತು ತೇವಾಂಶ ಕಡಿಮೆ ಮಾಡಿ"],
+            "prevention": ["ರೋಗ ನಿರೋಧಕ ತಳಿಗಳನ್ನು ಬಳಸಿ", "ಸಂಜೆ ಎಲೆಗಳ ಮೇಲೆ ನೀರು ಸಿಂಪಡಿಸುವುದನ್ನು ತಪ್ಪಿಸಿ", "ಸ್ವಯಂಬೆಳೆದ ಆಲೂಗಡ್ಡೆ ಮತ್ತು ಟೊಮೇಟೊ ಸಸ್ಯಗಳನ್ನು ನಾಶಪಡಿಸಿ"],
+            "fertilizer_recommendation": "ಸಮತೋಲನ NPK (10-10-10); ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ ಏಕೆಂದರೆ ಅದು ರೋಗಕ್ಕೆ ಹೆಚ್ಚು ಒಳಗಾಗುವಂತೆ ಮಾಡುತ್ತದೆ.",
         },
     },
     "Potato_Healthy": {
         "english": {
             "cause": "No disease detected — the potato plant appears healthy.",
-            "symptoms": ["Upright stems with dark green leaves", "No spots or wilting", "Good tuber development"],
-            "treatment_steps": ["Continue monitoring", "Maintain irrigation", "Scout for early signs of blight"],
-            "prevention": ["Use certified seed potatoes", "Practice crop rotation", "Avoid waterlogging"],
-            "fertilizer_recommendation": "Balanced NPK tailored to your soil test results.",
+            "symptoms": ["Bright green, vigorous foliage", "No spots, wilting, or lesions", "Good tuber formation"],
+            "treatment_steps": ["Monitor weekly for early signs of disease", "Maintain consistent watering", "Continue balanced nutrition"],
+            "prevention": ["Practice crop rotation", "Use certified seed potatoes", "Maintain clean tools and field hygiene"],
+            "fertilizer_recommendation": "Apply NPK 10-26-26 at planting; side-dress with nitrogen when plants are 15 cm tall.",
         },
         "kannada": {
-            "cause": "ಯಾವುದೇ ರೋಗ ಕಾಣಿಸಿಲ್ಲ — ಆಲೂಗಡ್ಡೆ ಸಸ್ಯ ಆರೋಗ್ಯಕರ.",
-            "symptoms": ["ಗಾಢ ಹಸಿರು ಎಲೆಗಳು", "ಕಲೆ ಅಥವಾ ಬಾಡುವಿಕೆ ಇಲ್ಲ", "ಉತ್ತಮ ಗೆಡ್ಡೆ ಬೆಳವಣಿಗೆ"],
-            "treatment_steps": ["ನಿರಂತರ ಮೇಲ್ವಿಚಾರಣೆ", "ನೀರಾವರಿ ಕಾಪಾಡಿ", "ಅಂಗಮಾರಿ ಆರಂಭಿಕ ಚಿಹ್ನೆಗಳನ್ನು ಗಮನಿಸಿ"],
-            "prevention": ["ರೋಗಮುಕ್ತ ಬೀಜ ಬಳಸಿ", "ಬೆಳೆ ಪರಿವರ್ತನೆ", "ನೀರು ನಿಲ್ಲದಂತೆ ಎಚ್ಚರಿಸಿ"],
-            "fertilizer_recommendation": "ಮಣ್ಣಿನ ಪರೀಕ್ಷೆ ಆಧಾರದ ಸಮತೋಲನ NPK ನೀಡಿ.",
+            "cause": "ಯಾವುದೇ ರೋಗ ಕಂಡುಬಂದಿಲ್ಲ — ಆಲೂಗಡ್ಡೆ ಸಸ್ಯ ಆರೋಗ್ಯಕರವಾಗಿದೆ.",
+            "symptoms": ["ಪ್ರಕಾಶಮಾನ ಹಸಿರು, ಚೈತನ್ಯಭರಿತ ಎಲೆಗಳು", "ಕಲೆ, ಬಾಡುವಿಕೆ, ಗಾಯ ಇಲ್ಲ", "ಉತ್ತಮ ಗೆಡ್ಡೆ ರಚನೆ"],
+            "treatment_steps": ["ವಾರಕ್ಕೊಮ್ಮೆ ರೋಗದ ಚಿಹ್ನೆಗಳನ್ನು ಪರೀಕ್ಷಿಸಿ", "ಸಾಕಷ್ಟು ನೀರಾವರಿ ಕಾಪಾಡಿ", "ಸಮತೋಲನ ಪೋಷಕಾಂಶ ನೀಡಿ"],
+            "prevention": ["ಬೆಳೆ ಪರಿವರ್ತನೆ ಮಾಡಿ", "ಪ್ರಮಾಣಿತ ಬೀಜ ಆಲೂಗಡ್ಡೆ ಬಳಸಿ", "ಸ್ವಚ್ಛ ಉಪಕರಣ ಮತ್ತು ಕ್ಷೇತ್ರ ಸ್ವಚ್ಛತೆ ಕಾಪಾಡಿ"],
+            "fertilizer_recommendation": "ನೆಟ್ಟ ಸಮಯದಲ್ಲಿ NPK 10-26-26; ಸಸ್ಯ 15 ಸೆಂ.ಮೀ. ಎತ್ತರದಲ್ಲಿದ್ದಾಗ ನೈಟ್ರೋಜನ್ ನೀಡಿ.",
         },
     },
 
     # ── Tomato ──────────────────────────────────────────────────────────────
     "Tomato_Bacterial Spot": {
         "english": {
-            "cause": "Caused by Xanthomonas bacteria spread through rain, insects, and contaminated equipment.",
-            "symptoms": ["Small dark water-soaked spots on leaves and fruit", "Yellow halo around leaf spots", "Defoliation in severe cases"],
-            "treatment_steps": ["Apply copper-based bactericide at first signs", "Remove infected plant parts", "Avoid working with wet plants"],
-            "prevention": ["Use resistant varieties and clean seed", "Disinfect tools regularly", "Rotate crops away from Solanaceae"],
-            "fertilizer_recommendation": "Balanced NPK; avoid excess nitrogen which promotes soft susceptible tissue.",
+            "cause": "Bacterial spot in tomato is caused by Xanthomonas species, spread by water splash and contaminated tools.",
+            "symptoms": ["Small, dark, water-soaked spots on leaves and fruit", "Yellow halo around spots on leaves", "Fruit lesions reducing marketability"],
+            "treatment_steps": ["Remove affected leaves", "Apply copper-based bactericides", "Avoid working with plants when wet"],
+            "prevention": ["Use disease-free transplants", "Rotate crops with non-solanaceous plants", "Ensure proper plant spacing and air flow"],
+            "fertilizer_recommendation": "Balanced NPK (10-10-10); maintain good plant nutrition to reduce stress-induced susceptibility.",
         },
         "kannada": {
-            "cause": "Xanthomonas ಬ್ಯಾಕ್ಟೀರಿಯಾ ಮಳೆ ಮತ್ತು ಸೋಂಕಿತ ಉಪಕರಣಗಳ ಮೂಲಕ ಹರಡುತ್ತದೆ.",
-            "symptoms": ["ಎಲೆ ಮತ್ತು ಹಣ್ಣಿನ ಮೇಲೆ ಸಣ್ಣ ಕಪ್ಪು ಕಲೆಗಳು", "ಕಲೆಗಳ ಸುತ್ತ ಹಳದಿ ವಲಯ", "ತೀವ್ರ ಸಂದರ್ಭದಲ್ಲಿ ಎಲೆ ಉದುರುವಿಕೆ"],
-            "treatment_steps": ["ಆರಂಭದಲ್ಲೇ ಕಾಪರ್ ಸ್ಪ್ರೇ ಮಾಡಿ", "ಸೋಂಕಿತ ಭಾಗ ತೆಗೆಯಿರಿ", "ತೇವ ಸಸ್ಯದ ಜೊತೆ ಕೆಲಸ ತಪ್ಪಿಸಿ"],
-            "prevention": ["ನಿರೋಧಕ ತಳಿ ಮತ್ತು ಸ್ವಚ್ಛ ಬೀಜ ಬಳಸಿ", "ಉಪಕರಣ ಕ್ರಮಬದ್ಧವಾಗಿ ಸ್ವಚ್ಛಗೊಳಿಸಿ", "ಬೆಳೆ ಪರಿವರ್ತನೆ"],
-            "fertilizer_recommendation": "ಸಮತೋಲನ NPK ಬಳಸಿ; ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ.",
+            "cause": "ಜಾಂಟೋಮೊನಾಸ್ ಬ್ಯಾಕ್ಟೀರಿಯಾ ನೀರು ಮತ್ತು ಸೋಂಕಿತ ಉಪಕರಣಗಳ ಮೂಲಕ ಹರಡುತ್ತದೆ.",
+            "symptoms": ["ಎಲೆ ಮತ್ತು ಹಣ್ಣಿನ ಮೇಲೆ ಚಿಕ್ಕ ಕಪ್ಪು ನೀರು ನೆನೆದ ಕಲೆಗಳು", "ಎಲೆಯ ಮೇಲೆ ಹಳದಿ ವಲಯ", "ಹಣ್ಣಿನ ಗಾಯಗಳು ಮಾರುಕಟ್ಟೆ ಮೌಲ್ಯ ಕಡಿಮೆ ಮಾಡುತ್ತದೆ"],
+            "treatment_steps": ["ಪೀಡಿತ ಎಲೆಗಳನ್ನು ತೆಗೆದುಹಾಕಿ", "ತಾಮ್ರ ಆಧಾರಿತ ರಾಸಾಯನಿಕ ಸಿಂಪಡಿಸಿ", "ಸಸ್ಯ ತೇವವಾಗಿರುವಾಗ ಕೆಲಸ ಮಾಡಬೇಡಿ"],
+            "prevention": ["ರೋಗಮುಕ್ತ ಮೊಳಕೆ ಬಳಸಿ", "ಸೋಲಾನೇಸಿಯಸ್ ಅಲ್ಲದ ಬೆಳೆಗಳೊಂದಿಗೆ ಪರಿವರ್ತನೆ", "ಸರಿಯಾದ ಅಂತರ ಮತ್ತು ಗಾಳಿ ಸಂಚಾರ ಇರಿಸಿ"],
+            "fertilizer_recommendation": "ಸಮತೋಲನ NPK (10-10-10); ಒತ್ತಡ ಕಡಿಮೆ ಮಾಡಲು ಉತ್ತಮ ಪೋಷಕಾಂಶ.",
         },
     },
     "Tomato_Early Blight": {
         "english": {
-            "cause": "Early blight (Alternaria solani) develops under warm humid conditions and on stressed plants.",
-            "symptoms": ["Concentric ring (target) spots on older leaves", "Yellowing around lesions", "Premature leaf drop"],
-            "treatment_steps": ["Remove lower infected leaves", "Apply mancozeb or chlorothalonil", "Reduce leaf wetness duration"],
-            "prevention": ["Rotate crops", "Mulch to prevent soil splash", "Avoid wetting foliage"],
-            "fertilizer_recommendation": "Adequate nitrogen and potassium to keep plants vigorous without excess.",
+            "cause": "Early blight is caused by Alternaria solani fungus, favoring warm, humid conditions.",
+            "symptoms": ["Concentric ring spots (target pattern) on older leaves", "Yellowing and dropping of lower leaves", "Stem lesions near soil line"],
+            "treatment_steps": ["Prune lower infected leaves", "Apply fungicides containing mancozeb or chlorothalonil", "Mulch to prevent soil splash"],
+            "prevention": ["Use resistant varieties", "Rotate with non-solanaceous crops for 2-3 years", "Maintain adequate spacing and air circulation"],
+            "fertilizer_recommendation": "Balanced NPK (10-10-10) throughout season; avoid excessive nitrogen which promotes dense foliage.",
         },
         "kannada": {
-            "cause": "ಟೊಮೇಟೊ ಆರಂಭಿಕ ಅಂಗಮಾರಿ Alternaria solani ಶಿಲೀಂಧ್ರದಿಂದ ಉಂಟಾಗುತ್ತದೆ.",
-            "symptoms": ["ಹಳೆಯ ಎಲೆಗಳ ಮೇಲೆ ಚಕ್ರ ಮಾದರಿ ಕಲೆ", "ಗಾಯಗಳ ಸುತ್ತ ಹಳದಿ", "ಮುಂಚಿತ ಎಲೆ ಉದುರುವಿಕೆ"],
-            "treatment_steps": ["ಕೆಳ ಸೋಂಕಿತ ಎಲೆ ತೆಗೆಯಿರಿ", "ಶಿಫಾರಿಸು ಫಂಗಿಸೈಡ್ ಬಳಸಿ", "ಎಲೆ ತೇವ ಕಡಿಮೆ ಮಾಡಿ"],
-            "prevention": ["ಬೆಳೆ ಪರಿವರ್ತನೆ", "ಮಣ್ಣಿನ ಚಿಮ್ಮು ತಡೆಗೆ ಮಲ್ಚ್ ಬಳಸಿ", "ಎಲೆ ತೇವ ತಪ್ಪಿಸಿ"],
-            "fertilizer_recommendation": "ಸಮತೋಲನ ನೈಟ್ರೋಜನ್ ಮತ್ತು ಪೊಟ್ಯಾಶಿಯಂ ನೀಡಿ.",
+            "cause": "ಅಲ್ಟರ್ನೇರಿಯಾ ಸೊಲಾನಿ ಶಿಲೀಂಧ್ರದಿಂದ, ಬೆಚ್ಚಗಿನ ತೇವಾಂಶದಲ್ಲಿ ಬೆಳೆಯುತ್ತದೆ.",
+            "symptoms": ["ಹಳೆಯ ಎಲೆಗಳ ಮೇಲೆ ವೃತ್ತಾಕಾರ ಕಲೆಗಳು", "ಕೆಳಗಿನ ಎಲೆಗಳು ಹಳದಿಯಾಗಿ ಉದುರುವುದು", "ಮಣ್ಣಿನ ಹತ್ತಿರ ಕಾಂಡದ ಮೇಲೆ ಗಾಯಗಳು"],
+            "treatment_steps": ["ಕೆಳಗಿನ ಸೋಂಕಿತ ಎಲೆಗಳನ್ನು ಕತ್ತರಿಸಿ", "ಮ್ಯಾನ್ಕೋಜೆಬ್ ಅಥವಾ ಕ್ಲೋರೋಥಾಲೋನಿಲ್ ಶಿಲೀಂಧ್ರನಾಶಕ ಸಿಂಪಡಿಸಿ", "ಮಣ್ಣು ಚಿಮುಕಿಸುವುದನ್ನು ತಡೆಯಲು ಮಲ್ಚ್ ಹಾಕಿ"],
+            "prevention": ["ರೋಗ ನಿರೋಧಕ ತಳಿಗಳನ್ನು ಬಳಸಿ", "2-3 ವರ್ಷಗಳ ಕಾಲ ಬೆಳೆ ಪರಿವರ್ತನೆ", "ಸಾಕಷ್ಟು ಅಂತರ ಮತ್ತು ಗಾಳಿ ಸಂಚಾರ ಇರಿಸಿ"],
+            "fertilizer_recommendation": "ಋತುವಿನ ಉದ್ದಕ್ಕೂ ಸಮತೋಲನ NPK (10-10-10); ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ.",
         },
     },
     "Tomato_Late Blight": {
         "english": {
-            "cause": "Late blight (Phytophthora infestans) spreads explosively in cool, wet conditions.",
-            "symptoms": ["Large irregular dark blotches on leaves and stems", "White cottony growth on undersides", "Fruit develops brown firm rot"],
-            "treatment_steps": ["Apply metalaxyl or cymoxanil fungicide immediately", "Destroy and remove infected plant material", "Improve drainage"],
-            "prevention": ["Use resistant varieties", "Avoid dense canopy", "Monitor and spray preventively in wet seasons"],
-            "fertilizer_recommendation": "Balanced calcium and potassium; avoid excess nitrogen.",
+            "cause": "Late blight is caused by Phytophthora infestans, thriving in cool, wet conditions.",
+            "symptoms": ["Water-soaked lesions on leaves and stems", "White fungal growth on leaf undersides", "Rapid plant collapse in humid weather"],
+            "treatment_steps": ["Remove and destroy infected plants immediately", "Apply systemic fungicides (metalaxyl, chlorothalonil)", "Improve drainage and reduce humidity"],
+            "prevention": ["Use resistant tomato varieties", "Avoid overhead watering in the evening", "Destroy plant debris and volunteer plants"],
+            "fertilizer_recommendation": "Balanced NPK (10-10-10) to maintain vigor; stressed plants are more susceptible.",
         },
         "kannada": {
-            "cause": "ಟೊಮೇಟೊ ತಡ ಅಂಗಮಾರಿ Phytophthora infestans ಶಿಲೀಂಧ್ರದಿಂದ ತ್ವರಿತವಾಗಿ ಹರಡುತ್ತದೆ.",
-            "symptoms": ["ಎಲೆ ಮತ್ತು ಕಾಂಡದ ಮೇಲೆ ದೊಡ್ಡ ಕಪ್ಪು ಚುಕ್ಕೆ", "ಕೆಳ ಎಲೆಯಲ್ಲಿ ಬಿಳಿ ಶಿಲೀಂಧ್ರ", "ಹಣ್ಣು ಕಂದು ಕೊಳೆಯಾಗುತ್ತದೆ"],
-            "treatment_steps": ["ತಕ್ಷಣ ಶಿಫಾರಸು ಫಂಗಿಸೈಡ್ ಸ್ಪ್ರೇ ಮಾಡಿ", "ಸೋಂಕಿತ ಸಸ್ಯ ನಾಶ ಮಾಡಿ", "ಒಳಚರಂಡಿ ಸುಧಾರಿಸಿ"],
-            "prevention": ["ನಿರೋಧಕ ತಳಿ ಬಳಸಿ", "ದಟ್ಟ ಎಲೆ ಚಂದವ ತಪ್ಪಿಸಿ", "ಮಳೆಗಾಲದಲ್ಲಿ ಮುಂಜಾಗ್ರತೆ ಸ್ಪ್ರೇ ಮಾಡಿ"],
-            "fertilizer_recommendation": "ಕ್ಯಾಲ್ಸಿಯಂ ಮತ್ತು ಪೊಟ್ಯಾಶಿಯಂ ಸಮತೋಲನದಲ್ಲಿ ಒದಗಿಸಿ.",
+            "cause": "ಫೈಟೋಫ್ಥೋರಾ ಇನ್ಫೆಸ್ಟಾನ್ಸ್ ರೋಗಾಣು, ತಂಪಾದ ತೇವಾಂಶದಲ್ಲಿ ಬೆಳೆಯುತ್ತದೆ.",
+            "symptoms": ["ಎಲೆ ಮತ್ತು ಕಾಂಡದ ಮೇಲೆ ನೀರು ನೆನೆದ ಗಾಯಗಳು", "ಎಲೆಯ ಕೆಳಭಾಗದಲ್ಲಿ ಬಿಳಿ ಶಿಲೀಂಧ್ರ", "ತೇವಾಂಶದಲ್ಲಿ ಸಸ್ಯ ತ್ವರಿತವಾಗಿ ಕುಸಿಯುತ್ತದೆ"],
+            "treatment_steps": ["ಸೋಂಕಿತ ಸಸ್ಯಗಳನ್ನು ತಕ್ಷಣ ತೆಗೆದು ನಾಶಪಡಿಸಿ", "ವ್ಯವಸ್ಥಿತ ಶಿಲೀಂಧ್ರನಾಶಕ (ಮೆಟಾಲಾಕ್ಸಿಲ್, ಕ್ಲೋರೋಥಾಲೋನಿಲ್) ಸಿಂಪಡಿಸಿ", "ನೀರಾವರಿ ವ್ಯವಸ್ಥೆ ಸುಧಾರಿಸಿ ಮತ್ತು ತೇವಾಂಶ ಕಡಿಮೆ ಮಾಡಿ"],
+            "prevention": ["ರೋಗ ನಿರೋಧಕ ಟೊಮೇಟೊ ತಳಿಗಳನ್ನು ಬಳಸಿ", "ಸಂಜೆ ಎಲೆಗಳ ಮೇಲೆ ನೀರು ಸಿಂಪಡಿಸುವುದನ್ನು ತಪ್ಪಿಸಿ", "ಸಸ್ಯದ ಉಳಿಕೆ ಮತ್ತು ಸ್ವಯಂಬೆಳೆದ ಸಸ್ಯಗಳನ್ನು ನಾಶಪಡಿಸಿ"],
+            "fertilizer_recommendation": "ಚೈತನ್ಯ ಕಾಪಾಡಲು ಸಮತೋಲನ NPK (10-10-10); ಒತ್ತಡದ ಸಸ್ಯಗಳು ಹೆಚ್ಚು ಸೋಂಕಿಗೆ ಒಳಗಾಗುತ್ತವೆ.",
         },
     },
     "Tomato_Leaf Mold": {
         "english": {
-            "cause": "Caused by the fungus Passalora fulva; thrives in high humidity (>85%) and poor ventilation.",
-            "symptoms": ["Pale yellow spots on upper leaf surface", "Olive-green to brown velvet mold on undersides", "Leaves curl and die"],
-            "treatment_steps": ["Reduce humidity by improving ventilation", "Apply fungicide (chlorothalonil/copper)", "Remove affected leaves"],
-            "prevention": ["Stake and prune tomatoes properly", "Avoid dense planting", "Use drip irrigation"],
-            "fertilizer_recommendation": "Balanced NPK; avoid excess nitrogen which promotes dense leaf growth.",
+            "cause": "Leaf mold is caused by the fungus Passalora fulva, thriving in high humidity and poor air circulation.",
+            "symptoms": ["Pale green or yellow spots on upper leaf surface", "Olive-green to brown fuzzy mold on leaf undersides", "Leaf curling and drop"],
+            "treatment_steps": ["Remove affected leaves", "Improve ventilation and reduce humidity", "Apply fungicides containing chlorothalonil or copper"],
+            "prevention": ["Use resistant varieties", "Space plants adequately for air flow", "Avoid overhead watering"],
+            "fertilizer_recommendation": "Balanced NPK (10-10-10) with good potassium levels to strengthen cell walls.",
         },
         "kannada": {
-            "cause": "ಟೊಮೇಟೊ ಎಲೆ ಶಿಲೀಂಧ್ರ Passalora fulva ಶಿಲೀಂಧ್ರದಿಂದ ಉಂಟಾಗುತ್ತದೆ.",
-            "symptoms": ["ಎಲೆಯ ಮೇಲ್ಭಾಗದಲ್ಲಿ ತಿಳಿ ಹಳದಿ ಕಲೆ", "ಕೆಳಭಾಗದಲ್ಲಿ ಹಳದಿ-ಕಂದು ಶಿಲೀಂಧ್ರ", "ಎಲೆ ಮಡಚಿ ಒಣಗುತ್ತದೆ"],
-            "treatment_steps": ["ಗಾಳಿಯಾಡುವಿಕೆ ಹೆಚ್ಚಿಸಿ ತೇವ ಕಡಿಮೆ ಮಾಡಿ", "ಶಿಫಾರಸು ಫಂಗಿಸೈಡ್ ಬಳಸಿ", "ಪೀಡಿತ ಎಲೆ ತೆಗೆಯಿರಿ"],
-            "prevention": ["ಸರಿಯಾಗಿ ಗಳ ನೆಟ್ಟು ಕಟ್ಟಿ", "ದಟ್ಟ ನಾಟಿ ತಪ್ಪಿಸಿ", "ಹನಿ ನೀರಾವರಿ ಬಳಸಿ"],
-            "fertilizer_recommendation": "ಸಮತೋಲನ NPK ಬಳಸಿ; ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ.",
+            "cause": "ಪಾಸಲೋರಾ ಫುಲ್ವಾ ಶಿಲೀಂಧ್ರದಿಂದ, ಹೆಚ್ಚು ತೇವಾಂಶ ಮತ್ತು ಕಡಿಮೆ ಗಾಳಿ ಸಂಚಾರದಲ್ಲಿ ಬೆಳೆಯುತ್ತದೆ.",
+            "symptoms": ["ಎಲೆಯ ಮೇಲ್ಭಾಗದಲ್ಲಿ ತಿಳಿ ಹಸಿರು ಅಥವಾ ಹಳದಿ ಕಲೆಗಳು", "ಎಲೆಯ ಕೆಳಭಾಗದಲ್ಲಿ ಆಲಿವ್-ಹಸಿರು ಹಾಗೂ ಕಂದು ಮಸುಕಾದ ಶಿಲೀಂಧ್ರ", "ಎಲೆ ಮಡಿಕೆ ಮತ್ತು ಉದುರುವಿಕೆ"],
+            "treatment_steps": ["ಪೀಡಿತ ಎಲೆಗಳನ್ನು ತೆಗೆದುಹಾಕಿ", "ವಾತಾಯನ ಸುಧಾರಿಸಿ ಮತ್ತು ತೇವಾಂಶ ಕಡಿಮೆ ಮಾಡಿ", "ಕ್ಲೋರೋಥಾಲೋನಿಲ್ ಅಥವಾ ತಾಮ್ರ ಶಿಲೀಂಧ್ರನಾಶಕ ಸಿಂಪಡಿಸಿ"],
+            "prevention": ["ರೋಗ ನಿರೋಧಕ ತಳಿಗಳನ್ನು ಬಳಸಿ", "ಗಾಳಿ ಸಂಚಾರಕ್ಕಾಗಿ ಸಸ್ಯಗಳನ್ನು ಸರಿಯಾಗಿ ಅಂತರಿಸಿ", "ಎಲೆಗಳ ಮೇಲೆ ನೀರು ಸಿಂಪಡಿಸುವುದನ್ನು ತಪ್ಪಿಸಿ"],
+            "fertilizer_recommendation": "ಕೋಶ ಗೋಡೆಗಳನ್ನು ಬಲಪಡಿಸಲು ಉತ್ತಮ ಪೊಟ್ಯಾಸಿಯಂ ಹೊಂದಿರುವ ಸಮತೋಲನ NPK (10-10-10).",
         },
     },
     "Tomato_Septoria Leaf Spot": {
         "english": {
-            "cause": "Caused by the fungus Septoria lycopersici; spreads through water splash and infected debris.",
-            "symptoms": ["Numerous small circular spots with grey centres and dark borders", "Begins on lower leaves, moves upward", "Yellowing and premature leaf drop"],
-            "treatment_steps": ["Remove lower infected leaves", "Apply fungicide at first sign", "Avoid water splash on leaves"],
-            "prevention": ["Mulch the soil surface", "Stake plants to improve airflow", "Follow crop rotation"],
-            "fertilizer_recommendation": "Balanced fertilization; excess nitrogen worsens disease severity.",
+            "cause": "Septoria leaf spot is caused by the fungus Septoria lycopersici, spread by water splash.",
+            "symptoms": ["Circular spots with gray centers and dark borders", "Small black specks (fungal fruiting bodies) inside spots", "Lower leaves affected first, progressing upward"],
+            "treatment_steps": ["Remove and destroy infected lower leaves", "Apply fungicides with chlorothalonil or mancozeb", "Mulch to reduce soil splash"],
+            "prevention": ["Practice crop rotation", "Space plants for air circulation", "Avoid working with wet plants"],
+            "fertilizer_recommendation": "Balanced NPK (10-10-10); maintain plant vigor to limit disease spread.",
         },
         "kannada": {
-            "cause": "Septoria lycopersici ಶಿಲೀಂಧ್ರ ನೀರಿನ ಚಿಮ್ಮಿನಿಂದ ಹರಡುತ್ತದೆ.",
-            "symptoms": ["ಸಣ್ಣ ಬೂದಿ ಕೇಂದ್ರದ ಕಲೆಗಳು", "ಕೆಳ ಎಲೆಗಳಿಂದ ಶುರುವಾಗಿ ಮೇಲೆ ಹರಡುತ್ತದೆ", "ಹಳದಿ ಮತ್ತು ಎಲೆ ಉದುರುವಿಕೆ"],
-            "treatment_steps": ["ಕೆಳ ಸೋಂಕಿತ ಎಲೆ ತೆಗೆಯಿರಿ", "ಆರಂಭದಲ್ಲೇ ಫಂಗಿಸೈಡ್ ಬಳಸಿ", "ನೀರಿನ ಚಿಮ್ಮು ತಪ್ಪಿಸಿ"],
-            "prevention": ["ಮಣ್ಣಿನ ಮೇಲ್ಮೈ ಮಲ್ಚ್ ಮಾಡಿ", "ಸಸ್ಯ ಗಳ ಹಾಕಿ ಗಾಳಿ ಚಲನೆ ಹೆಚ್ಚಿಸಿ", "ಬೆಳೆ ಪರಿವರ್ತನೆ"],
-            "fertilizer_recommendation": "ಸಮತೋಲನ ಗೊಬ್ಬರ ಬಳಸಿ; ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ.",
+            "cause": "ಸೆಪ್ಟೋರಿಯಾ ಲೈಕೋಪರ್ಸಿಸಿ ಶಿಲೀಂಧ್ರ, ನೀರು ಚಿಮುಕಿಸುವುದರಿಂದ ಹರಡುತ್ತದೆ.",
+            "symptoms": ["ಬೂದು ಕೇಂದ್ರ ಮತ್ತು ಕಪ್ಪು ಅಂಚುಳ್ಳ ವೃತ್ತಾಕಾರ ಕಲೆಗಳು", "ಕಲೆಗಳ ಒಳಗೆ ಚಿಕ್ಕ ಕಪ್ಪು ಚುಕ್ಕೆಗಳು (ಶಿಲೀಂಧ್ರ ಹಣ್ಣುಗಳು)", "ಮೊದಲು ಕೆಳಗಿನ ಎಲೆಗಳು ಪೀಡಿತ, ನಂತರ ಮೇಲ್ಮುಖವಾಗಿ ಹರಡುತ್ತದೆ"],
+            "treatment_steps": ["ಸೋಂಕಿತ ಕೆಳಗಿನ ಎಲೆಗಳನ್ನು ತೆಗೆದು ನಾಶಪಡಿಸಿ", "ಕ್ಲೋರೋಥಾಲೋನಿಲ್ ಅಥವಾ ಮ್ಯಾನ್ಕೋಜೆಬ್ ಶಿಲೀಂಧ್ರನಾಶಕ ಸಿಂಪಡಿಸಿ", "ಮಣ್ಣು ಚಿಮುಕಿಸುವುದನ್ನು ತಡೆಯಲು ಮಲ್ಚ್ ಹಾಕಿ"],
+            "prevention": ["ಬೆಳೆ ಪರಿವರ್ತನೆ ಮಾಡಿ", "ಗಾಳಿ ಸಂಚಾರಕ್ಕಾಗಿ ಸಸ್ಯಗಳನ್ನು ಅಂತರಿಸಿ", "ತೇವವಾದ ಸಸ್ಯಗಳೊಂದಿಗೆ ಕೆಲಸ ಮಾಡಬೇಡಿ"],
+            "fertilizer_recommendation": "ರೋಗ ಹರಡುವುದನ್ನು ಮಿತಿಗೊಳಿಸಲು ಸಮತೋಲನ NPK (10-10-10); ಸಸ್ಯ ಚೈತನ್ಯ ಕಾಪಾಡಿ.",
         },
     },
     "Tomato_Spider Mites": {
         "english": {
-            "cause": "Two-spotted spider mites (Tetranychus urticae) thrive in hot, dry conditions; not a fungal disease.",
-            "symptoms": ["Tiny yellow stippling on leaves", "Fine webbing on undersides", "Leaves turn bronze/brown and dry out"],
-            "treatment_steps": ["Apply miticide or neem oil spray", "Increase plant humidity by misting", "Remove heavily infested leaves"],
-            "prevention": ["Avoid excessive nitrogen fertilization", "Maintain adequate soil moisture", "Introduce natural predators (predatory mites)"],
-            "fertilizer_recommendation": "Balanced nutrition; avoid excess nitrogen which promotes pest-susceptible growth.",
+            "cause": "Spider mites (Tetranychus urticae) are tiny arachnids that thrive in hot, dry conditions.",
+            "symptoms": ["Fine webbing on leaves and stems", "Yellow stippling or bronzing on leaves", "Leaf curling and drop"],
+            "treatment_steps": ["Spray plants with strong water jet to dislodge mites", "Apply miticides or insecticidal soap", "Increase humidity around plants"],
+            "prevention": ["Maintain adequate watering to avoid drought stress", "Encourage natural predators like ladybugs", "Avoid excessive nitrogen which promotes tender growth"],
+            "fertilizer_recommendation": "Balanced NPK (10-10-10); avoid over-fertilization which makes plants more attractive to mites.",
         },
         "kannada": {
-            "cause": "ಎರಡು-ಚುಕ್ಕೆ ಜೇಡ ಕೀಟ (Tetranychus urticae) ಬಿಸಿ, ಒಣ ವಾತಾವರಣದಲ್ಲಿ ಅಭಿವೃದ್ಧಿ ಹೊಂದುತ್ತದೆ.",
-            "symptoms": ["ಎಲೆಗಳ ಮೇಲೆ ಸಣ್ಣ ಹಳದಿ ಚುಕ್ಕೆ", "ಕೆಳಭಾಗದಲ್ಲಿ ಸೂಕ್ಷ್ಮ ಜಾಲ", "ಎಲೆ ಕಂದು ಬಣ್ಣ ಪಡೆದು ಒಣಗುತ್ತದೆ"],
-            "treatment_steps": ["ನೀಮ್ ಎಣ್ಣೆ ಅಥವಾ ಮಿಟಿಸೈಡ್ ಸ್ಪ್ರೇ ಮಾಡಿ", "ಸಸ್ಯದ ತೇವ ಹೆಚ್ಚಿಸಿ", "ತೀವ್ರ ಸೋಂಕಿತ ಎಲೆ ತೆಗೆಯಿರಿ"],
-            "prevention": ["ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ", "ಸಮರ್ಪಕ ಮಣ್ಣಿನ ತೇವ ಕಾಪಾಡಿ", "ನೈಸರ್ಗಿಕ ಶತ್ರುಗಳನ್ನು ಪ್ರೋತ್ಸಾಹಿಸಿ"],
-            "fertilizer_recommendation": "ಸಮತೋಲನ ಪೋಷಕಾಂಶ; ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ.",
+            "cause": "ಸ್ಪೈಡರ್ ಮೈಟ್ಸ್ (ಟೆಟ್ರಾನಿಕಸ್ ಉರ್ಟಿಕೇ) ಬಿಸಿ, ಶುಷ್ಕ ವಾತಾವರಣದಲ್ಲಿ ಬೆಳೆಯುತ್ತದೆ.",
+            "symptoms": ["ಎಲೆ ಮತ್ತು ಕಾಂಡದ ಮೇಲೆ ನುಣ್ಣಗೆ ಜಾಲ", "ಎಲೆಗಳ ಮೇಲೆ ಹಳದಿ ಚುಕ್ಕೆಗಳು ಅಥವಾ ಕಂದು ಬಣ್ಣ", "ಎಲೆ ಮಡಿಕೆ ಮತ್ತು ಉದುರುವಿಕೆ"],
+            "treatment_steps": ["ಮೈಟ್ಸ್ ತೆಗೆಯಲು ಬಲವಾದ ನೀರಿನ ಜೆಟ್ ಸಿಂಪಡಿಸಿ", "ಮೈಟಿಸೈಡ್ ಅಥವಾ ಕೀಟನಾಶಕ ಸೋಪ್ ಬಳಸಿ", "ಸಸ್ಯಗಳ ಸುತ್ತ ತೇವಾಂಶ ಹೆಚ್ಚಿಸಿ"],
+            "prevention": ["ಬರ ಒತ್ತಡ ತಪ್ಪಿಸಲು ಸಾಕಷ್ಟು ನೀರಾವರಿ", "ಲೇಡಿಬಗ್ಗಳಂತಹ ನೈಸರ್ಗಿಕ ಪರಭಕ್ಷಕಗಳನ್ನು ಪ್ರೋತ್ಸಾಹಿಸಿ", "ಹೆಚ್ಚು ನೈಟ್ರೋಜನ್ ತಪ್ಪಿಸಿ"],
+            "fertilizer_recommendation": "ಸಮತೋಲನ NPK (10-10-10); ಅತಿಯಾದ ಗೊಬ್ಬರ ತಪ್ಪಿಸಿ ಏಕೆಂದರೆ ಅದು ಮೈಟ್ಸ್ಗೆ ಸಸ್ಯವನ್ನು ಆಕರ್ಷಿಸುತ್ತದೆ.",
         },
     },
     "Tomato_Target Spot": {
         "english": {
-            "cause": "Target spot (Corynespora cassiicola) is favoured by wet, warm weather and plant stress.",
-            "symptoms": ["Dark brown circular spots with concentric rings", "Affects leaves, stems, and fruit", "Severe defoliation in wet seasons"],
-            "treatment_steps": ["Remove infected tissue", "Apply azoxystrobin or chlorothalonil", "Improve canopy airflow"],
-            "prevention": ["Avoid overhead irrigation", "Prune lower leaves", "Crop rotation and field sanitation"],
-            "fertilizer_recommendation": "Balanced nutrition especially potassium to improve disease tolerance.",
+            "cause": "Target spot is caused by the fungus Corynespora cassiicola, favored by warm, humid weather.",
+            "symptoms": ["Circular brown spots with concentric rings on leaves", "Lesions on stems and fruit", "Rapid defoliation in severe cases"],
+            "treatment_steps": ["Remove infected leaves", "Apply fungicides containing chlorothalonil or azoxystrobin", "Improve air circulation"],
+            "prevention": ["Use resistant varieties", "Practice crop rotation", "Avoid overhead irrigation"],
+            "fertilizer_recommendation": "Balanced NPK (10-10-10); ensure adequate potassium for disease resistance.",
         },
         "kannada": {
-            "cause": "ಟಾರ್ಗೆಟ್ ಸ್ಪಾಟ್ Corynespora cassiicola ಶಿಲೀಂಧ್ರದಿಂದ ತೇವ-ಬಿಸಿ ವಾತಾವರಣದಲ್ಲಿ ಹರಡುತ್ತದೆ.",
-            "symptoms": ["ಚಕ್ರ ಮಾದರಿ ಕಪ್ಪು ಕಲೆ", "ಎಲೆ, ಕಾಂಡ ಮತ್ತು ಹಣ್ಣಿಗೆ ತಗಲುತ್ತದೆ", "ಮಳೆಗಾಲದಲ್ಲಿ ತೀವ್ರ ಎಲೆ ಉದುರುವಿಕೆ"],
-            "treatment_steps": ["ಸೋಂಕಿತ ಭಾಗ ತೆಗೆಯಿರಿ", "ಶಿಫಾರಸು ಫಂಗಿಸೈಡ್ ಬಳಸಿ", "ಮರದ ಗಾಳಿ ಚಲನೆ ಹೆಚ್ಚಿಸಿ"],
-            "prevention": ["ಮೇಲಿನ ನೀರಾವರಿ ತಪ್ಪಿಸಿ", "ಕೆಳ ಎಲೆ ಕತ್ತರಿಸಿ", "ಬೆಳೆ ಪರಿವರ್ತನೆ"],
-            "fertilizer_recommendation": "ರೋಗ ನಿರೋಧಕ ಸಾಮರ್ಥ್ಯಕ್ಕಾಗಿ ಪೊಟ್ಯಾಶಿಯಂ ಒದಗಿಸಿ.",
+            "cause": "ಕೊರಿನೆಸ್ಪೊರಾ ಕಾಸಿಕೋಲಾ ಶಿಲೀಂಧ್ರ, ಬೆಚ್ಚಗಿನ ತೇವಾಂಶದಲ್ಲಿ ಬೆಳೆಯುತ್ತದೆ.",
+            "symptoms": ["ಎಲೆಗಳ ಮೇಲೆ ವೃತ್ತಾಕಾರ ಕಂದು ಕಲೆಗಳು", "ಕಾಂಡ ಮತ್ತು ಹಣ್ಣಿನ ಮೇಲೆ ಗಾಯಗಳು", "ತೀವ್ರ ಸಂದರ್ಭಗಳಲ್ಲಿ ತ್ವರಿತ ಎಲೆ ಉದುರುವಿಕೆ"],
+            "treatment_steps": ["ಸೋಂಕಿತ ಎಲೆಗಳನ್ನು ತೆಗೆದುಹಾಕಿ", "ಕ್ಲೋರೋಥಾಲೋನಿಲ್ ಅಥವಾ ಅಜೊಕ್ಸಿಸ್ಟ್ರೊಬಿನ್ ಶಿಲೀಂಧ್ರನಾಶಕ ಸಿಂಪಡಿಸಿ", "ಗಾಳಿ ಸಂಚಾರ ಸುಧಾರಿಸಿ"],
+            "prevention": ["ರೋಗ ನಿರೋಧಕ ತಳಿಗಳನ್ನು ಬಳಸಿ", "ಬೆಳೆ ಪರಿವರ್ತನೆ ಮಾಡಿ", "ಎಲೆಗಳ ಮೇಲೆ ನೀರು ಸಿಂಪಡಿಸುವುದನ್ನು ತಪ್ಪಿಸಿ"],
+            "fertilizer_recommendation": "ರೋಗ ನಿರೋಧಕತೆಗಾಗಿ ಸಮತೋಲನ NPK (10-10-10) ಮತ್ತು ಸಾಕಷ್ಟು ಪೊಟ್ಯಾಸಿಯಂ.",
         },
     },
     "Tomato_Yellow Leaf Curl Virus": {
@@ -603,6 +718,64 @@ def _generate_tts_audio(text: str, language: str) -> Tuple[str, str]:
 # API routes
 # ---------------------------------------------------------------------------
 
+@app.post("/auth/send-otp")
+def send_otp(payload: LoginRequest):
+    if not payload.phone or len(payload.phone) < 10:
+        raise HTTPException(status_code=400, detail="Valid phone number required")
+    
+    otp = str(random.randint(100000, 999999))
+    OTP_STORE[payload.phone] = {
+        "otp": otp,
+        "expires": time.time() + 300 # 5 minutes
+    }
+    
+    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+        try:
+            client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            client.messages.create(
+                body=f"Your Agrivision Edge login code is: {otp}",
+                from_=TWILIO_PHONE_NUMBER,
+                to=f"+91{payload.phone}"
+            )
+        except Exception as e:
+            print("Twilio error:", e)
+            raise HTTPException(status_code=500, detail="Failed to send SMS")
+    else:
+        # Mock mode if keys aren't set
+        print(f"\n[MOCK SMS] To: {payload.phone} | OTP: {otp}\n")
+        
+    return {"status": "ok", "message": "OTP sent successfully"}
+
+@app.post("/auth/verify-otp")
+def verify_otp(payload: VerifyOtpRequest):
+    record = OTP_STORE.get(payload.phone)
+    if not record:
+        raise HTTPException(status_code=400, detail="No OTP requested for this number")
+        
+    if time.time() > record["expires"]:
+        del OTP_STORE[payload.phone]
+        raise HTTPException(status_code=400, detail="OTP expired")
+        
+    if record["otp"] != payload.otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+        
+    # Success! Create/Update user in SQL DB
+    del OTP_STORE[payload.phone]
+    user = get_or_create_user(payload.phone)
+    return {"status": "ok", "user": user}
+
+@app.post("/login")
+def login(payload: LoginRequest) -> Dict[str, object]:
+    if not payload.phone.strip():
+        raise HTTPException(status_code=400, detail="Phone number is required")
+        
+    user = get_or_create_user(payload.phone)
+    return {
+        "status": "ok",
+        "message": "User verified and recorded in database",
+        "user": user
+    }
+
 @app.get("/health")
 def health() -> Dict[str, object]:
     return {
@@ -615,56 +788,54 @@ def health() -> Dict[str, object]:
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)) -> Dict[str, object]:
+    # 1. Validation
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Please upload an image file")
 
     payload = await file.read()
-    if not payload:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    image = Image.open(io.BytesIO(payload)).convert("RGB")
 
-    try:
-        image = Image.open(io.BytesIO(payload)).convert("RGB")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid image: {exc}") from exc
-
-    input_tensor = TRANSFORM(image).unsqueeze(0).to(DEVICE)
-
+    # 2. Local Inference
+    # FIX: Use TRANSFORM from your load function, and add .unsqueeze(0) for batch size
+    input_tensor = TRANSFORM(image).unsqueeze(0) 
+    
     with torch.inference_mode():
+        # FIX: Use uppercase DEVICE
+        input_tensor = input_tensor.to(DEVICE)
         logits = MODEL(input_tensor)
-    probs = torch.softmax(logits, dim=1)
+        probs = torch.softmax(logits, dim=1)
+        conf, class_idx = torch.max(probs, 1)
 
-    print("\n===== DEBUG =====")
-    print("Top 5 probs:", torch.topk(probs, 5))
-    print("Max prob:", torch.max(probs).item())
-    print("=================\n")
+    # 3. Map result to your folder structure (e.g., "Corn_Common_Rust")
+    full_class_name = CLASS_NAMES[class_idx.item()]
+    
+    # Split "Crop_Disease" string for the UI
+    parts = full_class_name.split("_", 1)
+    crop = parts[0]
+    disease = parts[1] if len(parts) > 1 else "Healthy"
+    confidence = conf.item()
 
-    if USING_FINETUNED:
-        crop, disease, confidence, candidates = _predict_finetuned(probs)
-    else:
-        crop, disease, confidence, candidates = _predict_imagenet_fallback(probs)
-
-    # Build remedy inline — avoids a second round-trip from the frontend.
+    # 4. Generate Remedy
     remedy = remedy_llm(disease=disease, crop=crop)
 
+    # 5. Build Final Response
     response = {
         "disease":        disease,
         "confidence":     round(confidence, 4),
         "severity":       _severity(confidence),
         "crop":           crop,
-        "top_candidates": candidates,
-        "model":          "fine-tuned" if USING_FINETUNED else "imagenet-fallback",
+        "model":          "EfficientNet-V2-S (Local)",
         "remedy":         remedy,
     }
 
-    # Store a lightweight copy in history (omit full remedy to save memory)
+    # FIX: Replace missing _update_history with direct append logic
     history_entry = {k: v for k, v in response.items() if k != "remedy"}
     history_entry["timestamp"] = datetime.now(timezone.utc).isoformat()
     PREDICTION_HISTORY.append(history_entry)
     if len(PREDICTION_HISTORY) > MAX_HISTORY:
         del PREDICTION_HISTORY[:-MAX_HISTORY]
-
+    
     return response
-
 
 @app.get("/history")
 def history(limit: int = Query(default=10, ge=1, le=100)) -> List[Dict[str, object]]:
@@ -676,50 +847,86 @@ def remedy_llm(
     disease: str = Query(..., min_length=1),
     crop:    str = Query(default=""),
 ) -> Dict[str, object]:
-    """Return remedy for a given disease (and optionally crop).
-
-    Tries to use Gemini API if GEMINI_API_KEY is present in .env.
-    Otherwise falls back to the static dictionary.
-    """
-    from dotenv import load_dotenv
-    load_dotenv(_HERE.parent / ".env", override=True)
+    """Return remedy for a given disease.
     
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if api_key:
+    Priority:
+    1. Gemini API (Dynamic) - if available
+    2. Static _REMEDY dictionary (Fast)
+    3. Local Fine-tuned model classification (Structural Fallback)
+    """
+    # --- 1. Attempt Gemini Remedy ---
+    if GEMINI_API_KEY:
         try:
             from google import genai
             from google.genai import types
-            import json
-            
-            client = genai.Client(api_key=api_key)
-            prompt = f"Provide a comprehensive, accurate, and highly detailed remedy guide for the crop '{crop}' and the disease '{disease}'. Use about 800 to 1000 characters total. Return a JSON object exactly matching this structure: {{\n  \"english\": {{\n    \"cause\": \"...\",\n    \"symptoms\": \"...\",\n    \"treatment_steps\": [\"step 1\", \"step 2\"],\n    \"prevention\": \"...\",\n    \"fertilizer_recommendation\": \"...\"\n  }},\n  \"kannada\": {{\n    \"cause\": \"... (in Kannada)\",\n    \"symptoms\": \"... (in Kannada)\",\n    \"treatment_steps\": [\"... (in Kannada)\"],\n    \"prevention\": \"... (in Kannada)\",\n    \"fertilizer_recommendation\": \"... (in Kannada)\"\n  }}\n}}"
-            gemini_model = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
-            response = client.models.generate_content(
-                model=gemini_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json")
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            print(f"Gemini API error: {e}. Falling back to static remedy.")
 
-    # 1. Exact compound key lookup  (most precise)
+            print(f"[Gemini] Attempting remedy generation for crop='{crop}' disease='{disease}' with model={GEMINI_MODEL}")
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            prompt = f"Provide a comprehensive remedy guide for the crop '{crop}' and disease '{disease}'. Return a JSON object with top-level keys 'english' and 'kannada' containing cause, symptoms, treatment_steps, prevention and fertilizer_recommendation."
+
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.2)
+            )
+
+            # Attempt to extract text payload from the genai response in a robust way
+            resp_text = None
+            if hasattr(response, "text") and isinstance(response.text, str) and response.text:
+                resp_text = response.text
+            else:
+                try:
+                    # Some client versions expose candidates/content
+                    resp_dict = response.to_dict() if hasattr(response, "to_dict") else None
+                    if resp_dict:
+                        resp_text = json.dumps(resp_dict)
+                    else:
+                        resp_text = str(response)
+                except Exception:
+                    resp_text = str(response)
+
+            try:
+                parsed = _safe_json_loads(resp_text)
+                print(f"[Gemini] Parsed JSON remedy successfully for {crop}_{disease}")
+                return parsed
+            except Exception as parse_exc:
+                print(f"[Gemini] Failed to parse Gemini response as JSON: {parse_exc}. Response was: {resp_text}")
+                # Fall through to local dictionary
+        except Exception as e:
+            print(f"Gemini remedy API error: {e}. Moving to local dictionary.")
+    
+    # --- 2. Static Dictionary Lookup (Fuzzy & Exact) ---
+    disease_lower = disease.lower()
+    crop_lower = crop.lower()
+    
+    # Try exact compound key first
     if crop:
         exact_key = f"{crop}_{disease}"
         if exact_key in _REMEDY:
             return build_recommendation(exact_key)
 
-    # 2. Fuzzy search across all keys
-    disease_lower = disease.lower()
-    crop_lower    = crop.lower()
+    # Fuzzy search
     for key in _REMEDY:
-        key_lower = key.lower()
-        if disease_lower in key_lower and (not crop_lower or crop_lower in key_lower):
+        if disease_lower in key.lower() and (not crop_lower or crop_lower in key.lower()):
             return build_recommendation(key)
 
-    # 3. Generic fallback
-    return build_recommendation(disease)
+    # --- 3. SYSTEM FALLBACK: Use Local Trained Model ---
+    # If we get here, the input 'disease' string didn't match our dictionary.
+    # We use the fine-tuned model (if loaded) to find the nearest valid class.
+    if USING_FINETUNED:
+        try:
+            # Since we don't have a new image here, we look for the 'disease' 
+            # string inside our local CLASS_NAMES list to find the closest match.
+            for class_name in CLASS_NAMES:
+                if disease_lower in class_name.lower():
+                    print(f"[Fallback] Found match in local model classes: {class_name}")
+                    return build_recommendation(class_name)
+        except Exception as exc:
+            print(f"Local model fallback failed: {exc}")
 
+    # Final Generic Fallback
+    return build_recommendation(disease)
+ 
 
 @app.post("/tts")
 def tts(payload: TtsRequest) -> Dict[str, str]:

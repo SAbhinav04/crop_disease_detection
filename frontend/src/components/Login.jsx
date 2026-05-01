@@ -1,5 +1,14 @@
 import { useState } from 'react';
 
+const DEFAULT_BYPASS_PHONE = '1234567890';
+const DEFAULT_BYPASS_OTP = '123456';
+
+const getApiBaseUrl = () => {
+  const value = import.meta.env.VITE_API_URL;
+  if (value) return value.replace(/\/$/, '');
+  return 'http://localhost:8000';
+};
+
 const T = {
   en: {
     badge: 'AGRIVISION EDGE',
@@ -59,39 +68,43 @@ const T = {
   }
 };
 
-// Replace this function with your actual OTP send/verify API calls
-const mockSendOtp = (phone) =>
-  new Promise((resolve) => setTimeout(() => resolve({ success: true, otp: '123456' }), 800));
-
-const mockVerifyOtp = (phone, otp, expectedOtp) =>
-  new Promise((resolve, reject) =>
-    setTimeout(() => {
-      if (otp === expectedOtp) resolve({ success: true });
-      else reject(new Error('invalid-otp'));
-    }, 800)
-  );
-
-export default function Login({ onLogin, initialLanguage = 'en' }) {
+export default function Login({ onLogin, initialLanguage = 'en', initialPhone = DEFAULT_BYPASS_PHONE }) {
   const [lang, setLang] = useState(initialLanguage);
-  const [phone, setPhone] = useState('');
+  const devLoginPhone = String(initialPhone || DEFAULT_BYPASS_PHONE).replace(/\D/g, '').slice(0, 10);
+  const [phone, setPhone] = useState(devLoginPhone);
   const [otp, setOtp] = useState('');
   const [step, setStep] = useState('phone');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [expectedOtp, setExpectedOtp] = useState('');
   const t = T[lang];
+
+  const canBypassLogin = phone === DEFAULT_BYPASS_PHONE;
+
+  const completeLogin = () => {
+    if (onLogin) onLogin({ phone, lang });
+  };
 
   const handleSendOtp = async () => {
     setError('');
     if (phone.length !== 10) { setError(t.errInvalidPhone); return; }
+
+    if (canBypassLogin) {
+      setStep('otp');
+      setOtp(DEFAULT_BYPASS_OTP);
+      return;
+    }
+
     setLoading(true);
     try {
-      const result = await mockSendOtp(phone);
-      // In production: call your backend OTP API here and remove the line below
-      setExpectedOtp(result.otp);
+      const res = await fetch(`${getApiBaseUrl()}/auth/send-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone })
+      });
+      if (!res.ok) throw new Error("Failed to send OTP");
       setStep('otp');
     } catch (err) {
-      console.error(err);
+      console.error("Send OTP Error:", err);
       setError(t.errGeneric);
     } finally {
       setLoading(false);
@@ -101,12 +114,25 @@ export default function Login({ onLogin, initialLanguage = 'en' }) {
   const handleVerify = async () => {
     setError('');
     if (otp.length < 6) return;
+
+    if (canBypassLogin && otp === DEFAULT_BYPASS_OTP) {
+      completeLogin();
+      return;
+    }
+
     setLoading(true);
     try {
-      await mockVerifyOtp(phone, otp, expectedOtp);
-      if (onLogin) onLogin({ phone, lang });
+      const res = await fetch(`${getApiBaseUrl()}/auth/verify-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, otp })
+      });
+      
+      if (!res.ok) throw new Error("Invalid OTP");
+      
+      completeLogin();
     } catch (err) {
-      console.error(err);
+      console.error("Verify OTP Error:", err);
       setError(t.errOtpFailed);
     } finally {
       setLoading(false);
@@ -117,10 +143,10 @@ export default function Login({ onLogin, initialLanguage = 'en' }) {
     setStep('phone');
     setOtp('');
     setError('');
-    setExpectedOtp('');
   };
 
   const BG = 'url(https://lh3.googleusercontent.com/aida-public/AB6AXuC1JGZgatIpJej__Oy2EjR0cVoILIjReuA1Y0X1srz-mM4K6a43BqcIH8WBQqx0tb-_9JTx4AguaCwKtosFbzTYgwwsvPjELaSPflgimN8oWXdpHJJ_XM2idIBd3IcU8Snsx5LuV9QsAz2_2XmG3f2cV0jjv9o67cgD1mdFyqs7xY7K4ORB1fsgLWWhCSGaLVYMcNCG4BU2fd0nGlI9rKcM0k2kwUbqPTYMlc56FDz_hEADkRlsNw0WHIjrswDNE213GTl8flidnxpM)';
+
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', backgroundImage: BG, backgroundSize: 'cover', backgroundPosition: 'center', backgroundAttachment: 'fixed', fontFamily: "'DM Sans','Noto Sans Kannada',system-ui,sans-serif", position: 'relative' }}>
@@ -179,6 +205,11 @@ export default function Login({ onLogin, initialLanguage = 'en' }) {
             <div style={{ padding: '11px 12px', fontSize: 13, color: 'rgba(0,0,0,0.5)', borderRight: '0.5px solid rgba(0,0,0,0.1)', background: 'rgba(0,0,0,0.03)', whiteSpace: 'nowrap' }}>🇮🇳 +91</div>
             <input type="tel" maxLength={10} value={phone} onChange={e => { setPhone(e.target.value.replace(/\D/g, '')); setError(''); }} placeholder="98XXXXXXXX" disabled={step === 'otp'} style={{ flex: 1, padding: '11px 12px', fontSize: 14, border: 'none', outline: 'none', background: 'transparent', color: '#1a2e0f' }} />
           </div>
+          {canBypassLogin ? (
+            <div style={{ fontSize: 11, color: '#3B6D11', marginBottom: '0.75rem', fontWeight: 500 }}>
+              Demo login enabled for {DEFAULT_BYPASS_PHONE}
+            </div>
+          ) : null}
 
           {/* OTP */}
           {step === 'otp' && (
@@ -199,12 +230,12 @@ export default function Login({ onLogin, initialLanguage = 'en' }) {
           {/* Buttons */}
           {step === 'phone' ? (
             <button onClick={handleSendOtp} disabled={phone.length < 10 || loading} style={{ width: '100%', padding: '12px', background: phone.length >= 10 && !loading ? '#1a2e0f' : 'rgba(0,0,0,0.12)', color: phone.length >= 10 && !loading ? '#fff' : 'rgba(0,0,0,0.3)', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: phone.length >= 10 && !loading ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, transition: 'background 0.15s', marginBottom: '1rem' }}>
-              {loading ? t.sending : <>{t.sendOtp} →</>}
+              {loading ? t.sending : <>{canBypassLogin ? 'Continue to app' : `${t.sendOtp} →`}</>}
             </button>
           ) : (
             <>
               <button onClick={handleVerify} disabled={otp.length < 6 || loading} style={{ width: '100%', padding: '12px', background: otp.length >= 6 && !loading ? '#1a2e0f' : 'rgba(0,0,0,0.12)', color: otp.length >= 6 && !loading ? '#fff' : 'rgba(0,0,0,0.3)', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: otp.length >= 6 && !loading ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, transition: 'background 0.15s', marginBottom: '0.75rem' }}>
-                {loading ? t.verifying : <>{t.verify} →</>}
+                {loading ? t.verifying : <>{canBypassLogin ? 'Enter demo code' : `${t.verify} →`}</>}
               </button>
               <div style={{ textAlign: 'center', fontSize: 12, color: 'rgba(0,0,0,0.4)' }}>
                 <span onClick={handleResend} style={{ color: '#3B6D11', cursor: 'pointer', fontWeight: 500 }}>{t.resend}</span>

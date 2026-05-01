@@ -6,5 +6,8 @@
     "build": "npm run build --prefix frontend",
     "preview": "npm run preview --prefix frontend",
     "postinstall": "npm install --prefix frontend"
+  },
+  "dependencies": {
+    "firebase": "^12.12.1"
   }
 }

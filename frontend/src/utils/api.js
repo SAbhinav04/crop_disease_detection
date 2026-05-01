@@ -45,8 +45,12 @@ export const predictDisease = async (file) => {
   return parseResponse(response);
 };
 
-export const fetchRemedy = async (disease) => {
-  const response = await fetch(buildUrl(`/remedy-llm?disease=${encodeURIComponent(disease)}`));
+export const fetchRemedy = async (disease, crop = "") => {
+  const params = new URLSearchParams();
+  if (disease) params.append('disease', disease);
+  if (crop) params.append('crop', crop);
+
+  const response = await fetch(buildUrl(`/remedy-llm?${params.toString()}`));
   return parseResponse(response);
 };
 

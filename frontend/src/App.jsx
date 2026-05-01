@@ -130,7 +130,7 @@ export default function App() {
     setError(null);
 
     try {
-      const result = await api.fetchRemedy(prediction.disease);
+      const result = await api.fetchRemedy(prediction.disease, prediction.crop);
       setRemedy(result);
       setAdviceOpen(true);
     } catch (caughtError) {
@@ -186,6 +186,7 @@ export default function App() {
     return (
       <Login
         initialLanguage={language}
+        initialPhone="1234567890"
         onLogin={({ lang }) => {
           setLanguage(lang);
           setIsLoggedIn(true);
