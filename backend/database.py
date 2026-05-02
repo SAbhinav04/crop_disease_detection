@@ -20,6 +20,7 @@ def init_db():
             last_login TEXT NOT NULL
         )
     """)
+
     conn.commit()
     conn.close()
 
@@ -32,7 +33,7 @@ def get_or_create_user(phone_number: str) -> dict:
     user = cursor.fetchone()
     
     now = datetime.now(timezone.utc).isoformat()
-    
+
     if user:
         # Update last login
         cursor.execute("UPDATE users SET last_login = ? WHERE phone_number = ?", (now, phone_number))

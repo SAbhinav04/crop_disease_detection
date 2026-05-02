@@ -43,7 +43,24 @@ export const uiText = {
     copyFailed: 'Could not copy result',
     shareFailed: 'Could not open share sheet',
     confidenceTooltip: 'Exact confidence: ',
-    showHistoryGraph: 'Trend over predictions'
+    showHistoryGraph: 'Trend over predictions',
+    howItWorks: 'How it works',
+    step1Title: 'Upload Leaf',
+    step1Desc: 'Upload a clear leaf image',
+    step2Title: 'AI Detects Disease',
+    step2Desc: 'Our AI analyzes and detects disease',
+    step3Title: 'Get Solution',
+    step3Desc: 'Get treatment and prevention advice',
+    step4Title: 'Listen in Kannada',
+    step4Desc: 'Audio guidance in Kannada',
+    feature1Title: 'Accurate Detection',
+    feature1Desc: 'AI-powered disease identification',
+    feature2Title: 'Smart Solutions',
+    feature2Desc: 'Personalized treatment and prevention tips',
+    feature3Title: 'Audio Support',
+    feature3Desc: 'Listen to advice in Kannada',
+    feature4Title: 'History Tracking',
+    feature4Desc: 'View your past diagnosis history'
   },
   kn: {
     title: 'ಅಗ್ರಿವಿಷನ್ ಎಡ್ಜ್',
@@ -90,7 +107,24 @@ export const uiText = {
     copyFailed: 'ಫಲಿತಾಂಶ ನಕಲಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ',
     shareFailed: 'ಹಂಚಿಕೆ ತೆರೆಯಲಾಗಲಿಲ್ಲ',
     confidenceTooltip: 'ನಿಖರ ನಂಬಿಕೆ: ',
-    showHistoryGraph: 'ಊಹೆಗಳ ಮೇಲೆ ಪ್ರವೃತ್ತಿ'
+    showHistoryGraph: 'ಊಹೆಗಳ ಮೇಲೆ ಪ್ರವೃತ್ತಿ',
+    howItWorks: 'ಹೇಗೆ ಕೆಲಸ ಮಾಡುತ್ತದೆ',
+    step1Title: 'ಎಲೆ ಅಪ್‌ಲೋಡ್ ಮಾಡಿ',
+    step1Desc: 'ಸ್ಪಷ್ಟವಾದ ಎಲೆ ಚಿತ್ರದನ್ನ ಅಪ್‌ಲೋಡ್ ಮಾಡಿ',
+    step2Title: 'AI ರೋಗ ಪತ್ತೆ ಮಾಡುತ್ತದೆ',
+    step2Desc: 'ನಮ್ಮ AI ವಿಶ್ಲೇಷಿಸಿ ರೋಗವನ್ನು ಪತ್ತೆಹಿಡಿಯುತ್ತದೆ',
+    step3Title: 'ಪರಿಹಾರ ಪಡೆಯಿರಿ',
+    step3Desc: 'ಚಿಕಿತ್ಸೆ ಮತ್ತು ತಡೆ ಸಲಹೆಗಳನ್ನು ಪಡೆಯಿರಿ',
+    step4Title: 'ಕನ್ನಡದಲ್ಲಿ ಕೇಳಿ',
+    step4Desc: 'ಕನ್ನಡದಲ್ಲಿ ಧ್ವನಿ ಮಾರ್ಗದರ್ಶನ',
+    feature1Title: 'ನಿಖರ ಪತ್ತೆ',
+    feature1Desc: 'AI ಆಧಾರಿತ ರೋಗ ಗುರುತింపు',
+    feature2Title: 'ಸ್ಮಾರ್ಟ್ ಪರಿಹಾರಗಳು',
+    feature2Desc: 'ವೈಯಕ್ತಿಕ ಚಿಕಿತ್ಸಾ ಮತ್ತು ತಡೆ ಸಲಹೆಗಳು',
+    feature3Title: 'ಧ್ವನಿ ಬೆಂಬಲ',
+    feature3Desc: 'ಕನ್ನಡದಲ್ಲಿ ಸಲಹೆ ಕೇಳಿ',
+    feature4Title: 'ಇತಿಹಾಸ ಟ್ರ್ಯಾಕಿಂಗ್',
+    feature4Desc: 'ನಿಮ್ಮ ಹಿಂದಿನ ನಿರ್ಧಾರ ಇತಿಹಾಸ ನೋಡಿ'
   }
 };
 

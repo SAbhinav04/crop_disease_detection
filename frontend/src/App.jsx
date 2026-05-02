@@ -1,16 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 import Login from './components/Login';
-import Header from './components/Header';
-import ResponsiveLayout from './components/ResponsiveLayout';
+import Navbar from './components/Navbar';
+import Hero from './components/Hero';
 import UploadSection from './components/UploadSection';
 import ResultsSection from './components/ResultsSection';
 import AIAdviceSection from './components/AIAdviceSection';
-import DiseaseHistory from './components/DiseaseHistory';
 import AudioPlayer from './components/AudioPlayer';
-import ResultCard from './components/ResultCard';
+import HowItWorks from './components/HowItWorks';
+import Features from './components/Features';
+import Footer from './components/Footer';
 import { useApi } from './hooks/useApi';
 import { uiText } from './utils/i18n';
+
+const MAX_TTS_WORDS_BY_LANGUAGE = {
+  en: 78,
+  kn: 60
+};
 
 const normalizeErrorMessage = (error, fallback) => {
   if (!error) return fallback;
@@ -20,6 +26,71 @@ const normalizeErrorMessage = (error, fallback) => {
 };
 
 const createPreviewUrl = (file) => (file ? URL.createObjectURL(file) : '');
+
+const normalizeSentence = (value) => {
+  if (!value) return '';
+
+  const text = Array.isArray(value) ? value.filter(Boolean).join('. ') : String(value);
+  return text
+    .replace(/\s+/g, ' ')
+    .replace(/[•\-*]+\s*/g, ' ')
+    .trim();
+};
+
+const clampWords = (value, maxWords) => {
+  const words = String(value || '').split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return words.join(' ');
+  return `${words.slice(0, maxWords).join(' ')}...`;
+};
+
+const compactField = (value, maxWords) => clampWords(normalizeSentence(value), maxWords);
+
+const buildCompactTtsSummary = ({ disease, crop, block, language }) => {
+  const isKannada = language === 'kn';
+  const maxWords = MAX_TTS_WORDS_BY_LANGUAGE[language] || MAX_TTS_WORDS_BY_LANGUAGE.en;
+
+  const labels = isKannada
+    ? {
+        disease: 'ರೋಗ',
+        crop: 'ಬೆಳೆ',
+        cause: 'ಕಾರಣ',
+        prevention: 'ತಡೆ',
+        cure: 'ಚಿಕಿತ್ಸೆ',
+        missing: 'ಮಾಹಿತಿ ಲಭ್ಯವಿಲ್ಲ'
+      }
+    : {
+        disease: 'Disease',
+        crop: 'Crop',
+        cause: 'Cause',
+        prevention: 'Prevention',
+        cure: 'Treatment',
+        missing: 'Not available'
+      };
+
+  const diseaseText = compactField(disease, 10) || 'Unknown';
+  const causeText = compactField(block?.cause, 20) || labels.missing;
+  const remedySource = block?.treatment_steps || block?.prevention;
+  const remedyText = compactField(remedySource, 24) || labels.missing;
+  const preventionText = compactField(block?.prevention, 14);
+  const cropText = compactField(crop, 6);
+
+  // Priority order for 30s TTS: disease -> cause -> remedy. Then add optional context if space allows.
+  const mandatoryParts = [
+    `${labels.disease}: ${diseaseText}`,
+    `${labels.cause}: ${causeText}`,
+    `${labels.cure}: ${remedyText}`
+  ];
+
+  const optionalParts = [
+    preventionText ? `${labels.prevention}: ${preventionText}` : '',
+    cropText ? `${labels.crop}: ${cropText}` : ''
+  ].filter(Boolean);
+
+  const mandatorySummary = clampWords(mandatoryParts.join('. '), maxWords);
+  const withOptional = clampWords(`${mandatorySummary}. ${optionalParts.join('. ')}`, maxWords);
+
+  return optionalParts.length ? withOptional : mandatorySummary;
+};
 
 export default function App() {
   const api = useApi();
@@ -142,20 +213,17 @@ export default function App() {
 
   const buildSpeechText = useMemo(() => {
     if (!remedy) return '';
+
     const remedyKey = language === 'kn' ? 'kannada' : 'english';
     const block = remedy[remedyKey] || remedy.english || remedy.kannada;
-    if (!block) return prediction?.disease || '';
+    if (!block) return clampWords(prediction?.disease || '');
 
-    const parts = [
-      prediction?.disease,
-      block.cause,
-      block.symptoms,
-      Array.isArray(block.treatment_steps) ? block.treatment_steps.join('. ') : block.treatment_steps,
-      block.prevention,
-      block.fertilizer_recommendation
-    ].filter(Boolean);
-
-    return parts.join('. ');
+    return buildCompactTtsSummary({
+      disease: prediction?.disease,
+      crop: prediction?.crop,
+      block,
+      language
+    });
   }, [language, prediction, remedy]);
 
   const handleRequestAudio = async () => {
@@ -182,6 +250,25 @@ export default function App() {
     }
   };
 
+  const handleReset = () => {
+    setSelectedFile(null);
+    setPreviewUrl('');
+    setPrediction(null);
+    setError(null);
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setSelectedFile(null);
+    setPreviewUrl('');
+    setPrediction(null);
+    setRemedy(null);
+    setAudioSrc(null);
+    setAdviceOpen(false);
+    setError(null);
+    setHistoryError(null);
+  };
+
   if (!isLoggedIn) {
     return (
       <Login
@@ -196,23 +283,31 @@ export default function App() {
   }
 
   return (
-    <div className="app-root app-shell">
-      <ResponsiveLayout
-        header={<Header language={language} onToggleLanguage={handleLanguageToggle} labels={labels} />}
-        left={
+    <div className="app-root">
+      <Navbar language={language} setLanguage={setLanguage} labels={labels} onLogout={handleLogout} />
+
+      <div className="section-container">
+
+        <Hero labels={labels} />
+
+        {!prediction && (
           <>
-            {prediction ? <ResultCard result={prediction} /> : null}
             <UploadSection
-              language={language}
               labels={labels}
               selectedFile={selectedFile}
               previewUrl={previewUrl}
               loading={loadingPrediction}
               error={error}
               onFileSelect={handleFileSelect}
-              onInvalidFile={handleInvalidFile}
               onAnalyze={handleAnalyze}
             />
+
+            <HowItWorks labels={labels} />
+          </>
+        )}
+
+        {prediction && (
+          <>
             <ResultsSection
               prediction={prediction}
               labels={labels}
@@ -221,6 +316,7 @@ export default function App() {
               adviceLoading={loadingAdvice}
               audioLoading={loadingAudio}
             />
+
             <AIAdviceSection
               remedy={remedy}
               language={language}
@@ -228,18 +324,7 @@ export default function App() {
               onToggle={() => setAdviceOpen((current) => !current)}
               onSwitchLanguage={setLanguage}
             />
-            
-          </>
-        }
-        right={
-          <>
-            <DiseaseHistory
-              history={history}
-              loading={loadingHistory}
-              error={historyError}
-              labels={labels}
-              onRefresh={loadHistory}
-            />
+
             <AudioPlayer
               src={audioSrc}
               loading={loadingAudio}
@@ -248,9 +333,13 @@ export default function App() {
               playNonce={audioPlayNonce}
             />
           </>
-          
-        }
-      />
+        )}
+
+        <Features labels={labels} />
+
+        <Footer />
+
+      </div>
     </div>
   );
 }
