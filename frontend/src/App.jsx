@@ -51,21 +51,21 @@ const buildCompactTtsSummary = ({ disease, crop, block, language }) => {
 
   const labels = isKannada
     ? {
-        disease: 'ರೋಗ',
-        crop: 'ಬೆಳೆ',
-        cause: 'ಕಾರಣ',
-        prevention: 'ತಡೆ',
-        cure: 'ಚಿಕಿತ್ಸೆ',
-        missing: 'ಮಾಹಿತಿ ಲಭ್ಯವಿಲ್ಲ'
-      }
+      disease: 'ರೋಗ',
+      crop: 'ಬೆಳೆ',
+      cause: 'ಕಾರಣ',
+      prevention: 'ತಡೆ',
+      cure: 'ಚಿಕಿತ್ಸೆ',
+      missing: 'ಮಾಹಿತಿ ಲಭ್ಯವಿಲ್ಲ'
+    }
     : {
-        disease: 'Disease',
-        crop: 'Crop',
-        cause: 'Cause',
-        prevention: 'Prevention',
-        cure: 'Treatment',
-        missing: 'Not available'
-      };
+      disease: 'Disease',
+      crop: 'Crop',
+      cause: 'Cause',
+      prevention: 'Prevention',
+      cure: 'Treatment',
+      missing: 'Not available'
+    };
 
   const diseaseText = compactField(disease, 10) || 'Unknown';
   const causeText = compactField(block?.cause, 20) || labels.missing;
