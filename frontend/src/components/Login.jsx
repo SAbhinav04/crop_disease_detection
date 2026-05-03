@@ -64,8 +64,7 @@ const T = {
   }
 };
 
-const BG = 'url(https://lh3.googleusercontent.com/aida-public/AB6AXuC1JGZgatIpJej__Oy2EjR0cVoILIjReuA1Y0X1srz-mM4K6a43BqcIH8WBQqx0tb-_9JTx4AguaCwKtosFbzTYgwwsvPjELaSPflgimN8oWXdpHJJ_XM2idIBd3IcU8Snsx5LuV9QsAz2_2XmG3f2cV0jjv9o67cgD1mdFyqs7xY7K4ORB1fsgLWWhCSGaLVYMcNCG4BU2fd0nGlI9rKcM0k2kwUbqPTYMlc56FDz_hEADkRlsNw0WHIjrswDNE213GTl8flidnxpM)';
-
+const BG = "url('/bg.jpeg')";
 // ─── Reusable input styles ───────────────────────────────────────────────────
 const inputWrap = (focused = false, disabled = false) => ({
   display: 'flex', alignItems: 'center', background: '#fff', borderRadius: 10,
