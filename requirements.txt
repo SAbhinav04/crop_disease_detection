@@ -23,6 +23,7 @@ uvicorn>=0.20.0
 python-multipart>=0.0.24
 requests>=2.32.0
 python-dotenv>=1.0.1
+twilio>=9.10.5 
 
 # Frontend ResultCard update
 # No additional Python packages required.
