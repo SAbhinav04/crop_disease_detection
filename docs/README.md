@@ -203,3 +203,73 @@ A teammate only needs to:
 - The app is ready for backend integration, but it still depends on the API contract above.
 - The production build currently emits a bundle-size warning because of the charting library. It does not block usage.
 - If needed, the history chart can be split into a lazy-loaded chunk later to reduce bundle size.
+
+
+## Model Evaluation Results
+
+- Total Images: 12,104  
+- Accuracy: 96.42%  
+- Precision: 96.64%  
+- Recall: 96.42%  
+- F1 Score: 96.46%  
+- Average Inference Time: 137.65 ms  
+
+### Observations
+- The model shows high accuracy and balanced performance.
+- Inference time is efficient for near real-time usage.
+- Minor misclassifications exist in edge cases (from confusion matrix).
+
+### Detailed Output (for reference)
+========== FINAL RESULTS ==========
+Total images: 12104
+Total processed: 12104
+
+Accuracy: 96.42%
+Precision: 96.64%
+Recall: 96.42%
+F1 Score: 96.46%
+
+Average Inference Time per image: 137.65 ms
+
+Confusion Matrix:
+[[121   0   0 ...   0   0   0]
+ [  0 378   0 ...   0   0   0]
+ [  0   0 285 ...   0   0   0]
+ ...
+ [  0   0   0 ... 593   5  20]
+ [  0   0   0 ...  13 591  11]
+ [  0   0   0 ...  37  15 517]]
+
+
+ ## TTS Evaluation (Sarvam AI)
+
+### Summary
+- The `/tts` endpoint works correctly and returns valid audio responses.
+- Kannada speech generation is functional and understandable.
+- End-to-end flow (Frontend → Backend → Sarvam API → Audio) is working.
+
+---
+
+### Observations
+- Latency observed: ~12–15 seconds per request.
+- Backend TTS integration is stable and reliable.
+- Audio quality is acceptable but slightly robotic.
+- Frontend audio playback is inconsistent due to blob handling issues.
+
+---
+
+### Issues Identified
+- Audio playback interruption due to multiple blob requests (frontend bug).
+- Missing Twilio dependency in `requirements.txt` (fixed).
+
+---
+
+### Evidence
+- Network logs confirm `/tts` endpoint returns **200 OK**.
+- Audio payload (~600–700 KB) confirms successful TTS generation.
+- Blob media requests indicate playback inconsistency in frontend.
+
+---
+
+### Conclusion
+Backend TTS functionality is working correctly; however, frontend audio playback handling is inconsistent and requires improvement. Performance optimization (latency reduction) would further enhance user experience.
