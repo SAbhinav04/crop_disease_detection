@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-export default function Navbar({ language, setLanguage, labels, onLogout }) {
+export default function Navbar({ language, setLanguage, labels, onLogout, userPhone }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -52,7 +52,7 @@ export default function Navbar({ language, setLanguage, labels, onLogout }) {
                 position: 'absolute',
                 top: '46px',
                 right: 0,
-                minWidth: '140px',
+                minWidth: '180px',
                 background: '#ffffff',
                 borderRadius: '12px',
                 border: '1px solid #e6ece8',
@@ -60,6 +60,22 @@ export default function Navbar({ language, setLanguage, labels, onLogout }) {
                 padding: '6px'
               }}
             >
+              {userPhone ? (
+                <div
+                  style={{
+                    padding: '8px 12px 10px',
+                    borderBottom: '1px solid #eef3ef',
+                    marginBottom: '6px'
+                  }}
+                >
+                  <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '3px' }}>
+                    Logged in with
+                  </div>
+                  <div style={{ fontSize: '14px', fontWeight: 600, color: '#1f2937' }}>
+                    {userPhone}
+                  </div>
+                </div>
+              ) : null}
               <button
                 type="button"
                 onClick={() => {

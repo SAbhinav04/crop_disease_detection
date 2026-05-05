@@ -95,6 +95,7 @@ const buildCompactTtsSummary = ({ disease, crop, block, language }) => {
 export default function App() {
   const api = useApi();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [currentUserPhone, setCurrentUserPhone] = useState('');
   const [language, setLanguage] = useState('en');
   const [selectedFile, setSelectedFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
@@ -259,6 +260,7 @@ export default function App() {
 
   const handleLogout = () => {
     setIsLoggedIn(false);
+    setCurrentUserPhone('');
     setSelectedFile(null);
     setPreviewUrl('');
     setPrediction(null);
@@ -274,8 +276,9 @@ export default function App() {
       <Login
         initialLanguage={language}
         initialPhone="1234567890"
-        onLogin={({ lang }) => {
+        onLogin={({ phone, lang }) => {
           setLanguage(lang);
+          setCurrentUserPhone(phone || '');
           setIsLoggedIn(true);
         }}
       />
@@ -284,26 +287,32 @@ export default function App() {
 
   return (
     <div className="app-root">
-      <Navbar language={language} setLanguage={setLanguage} labels={labels} onLogout={handleLogout} />
+      <Navbar
+        language={language}
+        setLanguage={setLanguage}
+        labels={labels}
+        onLogout={handleLogout}
+        userPhone={currentUserPhone}
+      />
 
       <div className="section-container">
 
         <Hero labels={labels} />
 
-        {!prediction && (
-          <>
-            <UploadSection
-              labels={labels}
-              selectedFile={selectedFile}
-              previewUrl={previewUrl}
-              loading={loadingPrediction}
-              error={error}
-              onFileSelect={handleFileSelect}
-              onAnalyze={handleAnalyze}
-            />
+        <UploadSection
+          labels={labels}
+          selectedFile={selectedFile}
+          previewUrl={previewUrl}
+          loading={loadingPrediction}
+          error={error}
+          onFileSelect={handleFileSelect}
+          onAnalyze={handleAnalyze}
+          onInvalidFile={handleInvalidFile}
+          language={language}
+        />
 
-            <HowItWorks labels={labels} />
-          </>
+        {!prediction && (
+          <HowItWorks labels={labels} />
         )}
 
         {prediction && (
