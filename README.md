@@ -64,23 +64,21 @@ npm run dev
 ## 🔑 Dev Credentials
 
 **Login to test the app:**
-```
-Phone: 1234567890
-OTP: 123456
-```
+
+- If Twilio is configured, use the OTP sent by SMS.
+- If Twilio is not configured, check the backend terminal for the printed OTP.
+
+Use any valid 10-digit phone number for local testing.
 
 ---
 
 ## 📖 Full Documentation
 
+For a complete end-to-end setup guide, including Gemini, Sarvam, Twilio, and the model files:
+👉 **[See docs/SETUP_GUIDE.md](./docs/SETUP_GUIDE.md)**
+
 For detailed architecture and component breakdown:
 👉 **[See ARCHITECTURE.md](./ARCHITECTURE.md)**
-
-For model specifications and usage:
-👉 **[See MODEL.md](./MODEL.md)**
-
-For model training and optimization:
-👉 **[See MODEL_TRAINING.md](./MODEL_TRAINING.md)**
 
 ---
 
@@ -94,8 +92,7 @@ crop_disease_detetction/
 ├── data/                 # Datasets
 ├── best_crop_model.pth   # Trained model
 ├── ARCHITECTURE.md       # Full architecture & components
-├── MODEL.md              # Model guide & specifications
-├── MODEL_TRAINING.md     # Model training & retraining
+├── docs/SETUP_GUIDE.md   # Complete setup and API key guide
 ├── QUICK_REFERENCE.md    # Navigation by role
 └── README.md             # This file
 ```

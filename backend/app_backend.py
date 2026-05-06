@@ -47,9 +47,9 @@ from backend.database import init_db, get_or_create_user
 
 _HERE           = Path(__file__).resolve().parent          # poc_api/
 _POC_DIR        = _HERE.parent / "poc"                     # poc/
-# FIX: Use relative path instead of absolute
-_MODEL_PATH     = Path("/Users/abhinav/crop_disease_detetction/best_crop_model.pth")
-_CLASSES_PATH   = Path("/Users/abhinav/crop_disease_detetction/classes.txt")
+_REPO_ROOT      = _HERE.parent
+_MODEL_PATH     = _REPO_ROOT / "best_crop_model.pth"
+_CLASSES_PATH   = _REPO_ROOT / "classes.txt"
 
 # Load env from repo root and poc_api so secrets can be set in either place.
 load_dotenv(_HERE.parent / ".env")
