@@ -7,6 +7,7 @@ import UploadSection from './components/UploadSection';
 import ResultsSection from './components/ResultsSection';
 import AIAdviceSection from './components/AIAdviceSection';
 import AudioPlayer from './components/AudioPlayer';
+import DiseaseHistory from './components/DiseaseHistory';
 import HowItWorks from './components/HowItWorks';
 import Features from './components/Features';
 import Footer from './components/Footer';
@@ -343,6 +344,14 @@ export default function App() {
             />
           </>
         )}
+
+        <DiseaseHistory
+          history={history}
+          loading={loadingHistory}
+          error={historyError}
+          onRefresh={loadHistory}
+          labels={labels}
+        />
 
         <Features labels={labels} />
 
